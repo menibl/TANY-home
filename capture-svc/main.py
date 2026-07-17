@@ -33,6 +33,19 @@ detector = DoubleClapDetector(
 log.info("clap detector config: threshold=%.3f window_ms=%d refractory_ms=%d",
           detector.energy_threshold, detector.clap_window_ms, detector.refractory_ms)
 
+_status = None
+if os.environ.get("STATUS_GUI", "1") == "1":
+    try:
+        from status_gui import StatusWindow
+        _status = StatusWindow()
+    except Exception:
+        log.exception("status GUI failed to start, continuing without it")
+
+
+def set_status(state: str, text: str = ""):
+    if _status:
+        _status.set_state(state, text)
+
 
 def _select_mic_stream_params():
     """Prefer a WASAPI input device at its own native sample rate.
@@ -160,6 +173,7 @@ async def open_conversation_session(user_id: str | None, certain: bool):
                 if isinstance(message, (bytes, bytearray)):
                     # full-reply TTS audio from orchestrator (see /session
                     # in orchestrator/main.py) -> play it through the speaker
+                    set_status("speaking")
                     await asyncio.to_thread(play_pcm16, bytes(message), TTS_SAMPLE_RATE)
                     continue
                 import json
@@ -168,8 +182,12 @@ async def open_conversation_session(user_id: str | None, certain: bool):
                 if etype == "identity_update":
                     log.info("identity confirmed mid-conversation: %s (%.2f)",
                               event["user_id"], event["confidence"])
+                elif etype == "partial_transcript":
+                    set_status("heard", event["text"])
+                elif etype == "tool_call":
+                    set_status("thinking", event["name"])
                 elif etype == "end_of_turn":
-                    pass  # hook for UI/state if needed
+                    set_status("session")
                 elif etype == "session_end":
                     log.info("session ended by orchestrator")
                     return
@@ -188,17 +206,21 @@ async def main_loop():
         if detector.process_frame(frame):
             loop.call_soon_threadsafe(trigger_event.set)
 
+    set_status("listening")
     with open_mic_stream(audio_callback):
         while True:
             await trigger_event.wait()
             trigger_event.clear()
             log.info("double-clap detected -> triggering identification")
+            set_status("clap")
             try:
+                set_status("identifying")
                 result = identify_from_snapshot()
             except Exception:
                 log.exception("snapshot/identify failed, greeting generically")
                 result = {"certain": False, "best_guess": None}
 
+            set_status("greeting")
             if result.get("certain"):
                 user_id = result["best_guess"]
                 await say(f"שלום {user_id}")
@@ -206,8 +228,10 @@ async def main_loop():
                 user_id = result.get("best_guess")
                 await say("שלום")
 
+            set_status("session")
             await open_conversation_session(user_id, certain=bool(result.get("certain")))
             log.info("back to listening for double-clap...")
+            set_status("listening")
 
 
 if __name__ == "__main__":
