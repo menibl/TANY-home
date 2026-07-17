@@ -17,11 +17,14 @@ python -m venv venv
 
 1. Start the other 5 services: `docker compose up -d` (from repo root)
 2. `.\run-windows.ps1`
+3. Open **http://127.0.0.1:8010** — live status dashboard + "משתמש חדש"
+   (new user) enrollment: face photo, body photo, and a voice sample,
+   sent to vision-id-svc's and voice-id-svc's `/enroll` endpoints.
 
 The script loads `RTSP_URL` / API keys from `..\.env`, and points
-`VISION_SVC_URL` / `ORCHESTRATOR_URL` at `localhost` (the ports those
-containers publish per `docker-compose.yml`) instead of the Docker
-network hostnames used when everything is containerized.
+`VISION_SVC_URL` / `VOICE_SVC_URL` / `ORCHESTRATOR_URL` at `localhost`
+(the ports those containers publish per `docker-compose.yml`) instead
+of the Docker network hostnames used when everything is containerized.
 
 ## Moving to a real Linux host / Raspberry Pi later
 

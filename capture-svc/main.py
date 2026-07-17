@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import logging
 import os
 import threading
@@ -17,7 +16,9 @@ log = logging.getLogger(__name__)
 
 RTSP_URL = os.environ["RTSP_URL"]
 VISION_SVC_URL = os.environ.get("VISION_SVC_URL", "http://vision-id-svc:8001")
+VOICE_SVC_URL = os.environ.get("VOICE_SVC_URL", "http://voice-id-svc:8002")
 ORCHESTRATOR_URL = os.environ.get("ORCHESTRATOR_URL", "http://orchestrator:8004")
+WEB_UI_PORT = int(os.environ.get("WEB_UI_PORT", "8010"))
 SAMPLE_RATE = 16000
 FRAME_MS = 20
 # Must match orchestrator/speech_io.py's TTS_SAMPLE_RATE (OpenAI `pcm`
@@ -34,18 +35,19 @@ detector = DoubleClapDetector(
 log.info("clap detector config: threshold=%.3f window_ms=%d refractory_ms=%d",
           detector.energy_threshold, detector.clap_window_ms, detector.refractory_ms)
 
-_status = None
-if os.environ.get("STATUS_GUI", "1") == "1":
-    try:
-        from status_gui import StatusWindow
-        _status = StatusWindow()
-    except Exception:
-        log.exception("status GUI failed to start, continuing without it")
+import web_ui
+
+# Mic hand-off between the always-on clap listener and one-off mic users
+# (the live conversation, and enrollment voice recording): only one
+# open_mic_stream() may be open at a time (see open_conversation_session
+# for why), so these coordinate who currently owns the device.
+mic_yield_requested = asyncio.Event()
+mic_yielded = asyncio.Event()
+mic_resume = asyncio.Event()
 
 
 def set_status(state: str, text: str = ""):
-    if _status:
-        _status.set_state(state, text)
+    web_ui.broadcast_status(state, text)
 
 
 def _select_mic_stream_params():
@@ -153,7 +155,12 @@ async def open_conversation_session(user_id: str | None, certain: bool):
 
     loop = asyncio.get_running_loop()
 
-    async with websockets.connect(uri, max_size=None) as ws:
+    # ping_interval=None: a single turn (whisper STT + Claude + TTS) can
+    # take well over the default 20s ping/pong keepalive tolerance on a
+    # slow turn, which was killing the connection right as the reply
+    # became ready. This is a local connection to a container on the
+    # same machine — dead-connection detection isn't needed here.
+    async with websockets.connect(uri, max_size=None, ping_interval=None) as ws:
         mic_queue: asyncio.Queue[bytes] = asyncio.Queue()
         speaker_active = threading.Event()
 
@@ -224,7 +231,23 @@ async def main_loop():
         # whole conversation too, it fights the session's own mic stream for
         # the same device and both end up starved (near-silent audio in)
         with open_mic_stream(audio_callback):
-            await trigger_event.wait()
+            wait_clap = asyncio.create_task(trigger_event.wait())
+            wait_yield = asyncio.create_task(mic_yield_requested.wait())
+            done, pending = await asyncio.wait(
+                {wait_clap, wait_yield}, return_when=asyncio.FIRST_COMPLETED
+            )
+            for t in pending:
+                t.cancel()
+
+        if wait_yield in done:
+            # enrollment (or something else) needs the mic — release ours,
+            # wait for it to finish, then go back to listening for claps
+            mic_yielded.set()
+            await mic_resume.wait()
+            mic_resume.clear()
+            mic_yielded.clear()
+            continue
+
         trigger_event.clear()
         log.info("double-clap detected -> triggering identification")
         set_status("clap")
@@ -244,9 +267,35 @@ async def main_loop():
             await say("שלום")
 
         set_status("session")
-        await open_conversation_session(user_id, certain=bool(result.get("certain")))
+        try:
+            await open_conversation_session(user_id, certain=bool(result.get("certain")))
+        except Exception:
+            # a dropped connection mid-conversation must not take down the
+            # whole process (including the web dashboard) — log it and go
+            # back to listening for the next clap instead
+            log.exception("conversation session ended abnormally")
         log.info("back to listening for double-clap...")
 
 
+async def run_all():
+    import uvicorn
+
+    web_ui.configure(
+        rtsp_url=RTSP_URL,
+        vision_svc_url=VISION_SVC_URL,
+        voice_svc_url=VOICE_SVC_URL,
+        open_mic_stream=open_mic_stream,
+        grab_snapshots=grab_snapshots,
+        sample_rate=SAMPLE_RATE,
+        mic_yield_requested=mic_yield_requested,
+        mic_yielded=mic_yielded,
+        mic_resume=mic_resume,
+    )
+    config = uvicorn.Config(web_ui.app, host="127.0.0.1", port=WEB_UI_PORT, log_level="warning")
+    server = uvicorn.Server(config)
+    log.info("dashboard: http://127.0.0.1:%d", WEB_UI_PORT)
+    await asyncio.gather(main_loop(), server.serve())
+
+
 if __name__ == "__main__":
-    asyncio.run(main_loop())
+    asyncio.run(run_all())

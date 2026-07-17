@@ -1,0 +1,206 @@
+"""
+Local web dashboard for capture-svc: live status (replaces the old
+Tkinter status_gui) + a "new user" enrollment flow (face photo, body
+photo, voice sample) that calls vision-id-svc's and voice-id-svc's
+existing /enroll endpoints.
+
+Kept separate from main.py and wired up via configure() to avoid a
+circular import (main.py needs to run this app; this app needs main.py's
+mic/camera helpers).
+"""
+import asyncio
+import base64
+import json
+import logging
+import time
+from pathlib import Path
+
+import numpy as np
+import requests
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+
+log = logging.getLogger("capture-svc.web_ui")
+app = FastAPI(title="homebot-capture-ui")
+
+STATIC_DIR = Path(__file__).parent / "static"
+
+# Filled in by configure() — avoids importing main.py at module load time
+_cfg = {}
+
+
+def configure(*, rtsp_url, vision_svc_url, voice_svc_url, open_mic_stream,
+              grab_snapshots, sample_rate, mic_yield_requested, mic_yielded, mic_resume):
+    _cfg.update(
+        rtsp_url=rtsp_url, vision_svc_url=vision_svc_url, voice_svc_url=voice_svc_url,
+        open_mic_stream=open_mic_stream, grab_snapshots=grab_snapshots, sample_rate=sample_rate,
+        mic_yield_requested=mic_yield_requested, mic_yielded=mic_yielded, mic_resume=mic_resume,
+    )
+
+
+# ---------------------------------------------------------------- status ws
+class _Broadcaster:
+    def __init__(self):
+        self._clients: set[WebSocket] = set()
+
+    async def register(self, ws: WebSocket):
+        await ws.accept()
+        self._clients.add(ws)
+
+    def unregister(self, ws: WebSocket):
+        self._clients.discard(ws)
+
+    async def send(self, state: str, text: str = ""):
+        dead = []
+        payload = json.dumps({"state": state, "text": text})
+        for ws in self._clients:
+            try:
+                await ws.send_text(payload)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self._clients.discard(ws)
+
+
+broadcaster = _Broadcaster()
+_last_state = {"state": "listening", "text": ""}
+
+
+def broadcast_status(state: str, text: str = ""):
+    """Thread/coroutine-agnostic entry point called from main.py's set_status().
+    Schedules the actual send onto whatever loop is running this app."""
+    _last_state["state"], _last_state["text"] = state, text
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(broadcaster.send(state, text))
+    except RuntimeError:
+        pass  # no loop yet (startup) — the client fetches current state on connect
+
+
+@app.websocket("/ws/status")
+async def ws_status(ws: WebSocket):
+    await broadcaster.register(ws)
+    await ws.send_text(json.dumps({"state": _last_state["state"], "text": _last_state["text"]}))
+    try:
+        while True:
+            await ws.receive_text()  # client sends nothing; just keep the socket open
+    except WebSocketDisconnect:
+        broadcaster.unregister(ws)
+
+
+# ------------------------------------------------------------------ pages
+@app.get("/")
+async def dashboard():
+    return FileResponse(STATIC_DIR / "dashboard.html")
+
+
+@app.get("/enroll")
+async def enroll_page():
+    return FileResponse(STATIC_DIR / "enroll.html")
+
+
+# ------------------------------------------------------------ enrollment
+async def _yield_mic():
+    """Ask main_loop's clap-listener to release the mic, and wait for it
+    to confirm. Both sides use open_mic_stream() on the same physical
+    device — holding it open in two places at once was the cause of the
+    near-silent-audio bug fixed earlier, so enrollment recording must
+    wait its turn instead of opening a second stream concurrently."""
+    _cfg["mic_yield_requested"].set()
+    await _cfg["mic_yielded"].wait()
+
+
+def _resume_mic():
+    _cfg["mic_yield_requested"].clear()
+    _cfg["mic_resume"].set()
+
+
+@app.post("/api/enroll/capture-face")
+async def capture_face():
+    try:
+        frames = await asyncio.to_thread(_cfg["grab_snapshots"], _cfg["rtsp_url"], 1)
+        _recording_state["last_face_b64"] = frames[0]
+        return {"ok": True, "image_b64": frames[0]}
+    except Exception as e:
+        log.exception("face capture failed")
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/api/enroll/capture-body")
+async def capture_body():
+    try:
+        frames = await asyncio.to_thread(_cfg["grab_snapshots"], _cfg["rtsp_url"], 1)
+        return {"ok": True, "image_b64": frames[0]}
+    except Exception as e:
+        log.exception("body capture failed")
+        return {"ok": False, "error": str(e)}
+
+
+_recording_state = {"active": False, "chunks": None, "stream": None}
+
+
+@app.post("/api/enroll/voice/start")
+async def voice_start():
+    if _recording_state["active"]:
+        return {"ok": False, "error": "already recording"}
+    await _yield_mic()
+    chunks: list[bytes] = []
+
+    def on_frame(frame: np.ndarray):
+        chunks.append(frame.tobytes())
+
+    stream = _cfg["open_mic_stream"](on_frame)
+    stream.start()
+    _recording_state.update(active=True, chunks=chunks, stream=stream, started_at=time.monotonic())
+    return {"ok": True}
+
+
+@app.post("/api/enroll/voice/stop")
+async def voice_stop():
+    if not _recording_state["active"]:
+        return {"ok": False, "error": "not recording"}
+    stream = _recording_state["stream"]
+    stream.stop()
+    stream.close()
+    chunks = _recording_state["chunks"]
+    duration_s = time.monotonic() - _recording_state["started_at"]
+    _recording_state.update(active=False, chunks=None, stream=None)
+    _resume_mic()
+
+    if not chunks or duration_s < 0.5:
+        return {"ok": False, "error": "הקלטה קצרה מדי, נסה שוב"}
+
+    pcm = b"".join(chunks)
+    _recording_state["last_pcm_b64"] = base64.b64encode(pcm).decode()
+    return {"ok": True, "duration_s": duration_s}
+
+
+class SubmitRequest(BaseModel):
+    user_id: str
+
+
+@app.post("/api/enroll/submit")
+async def submit_enrollment(req: SubmitRequest):
+    pcm_b64 = _recording_state.get("last_pcm_b64")
+    if not pcm_b64:
+        return {"ok": False, "error": "אין הקלטת קול — הקלט לפני שמירה"}
+
+    try:
+        face_resp = await asyncio.to_thread(
+            requests.post, f"{_cfg['vision_svc_url']}/enroll",
+            json={"user_id": req.user_id, "image_b64": _recording_state.get("last_face_b64", "")},
+            timeout=10,
+        )
+        voice_resp = await asyncio.to_thread(
+            requests.post, f"{_cfg['voice_svc_url']}/enroll",
+            json={"user_id": req.user_id, "audio_b64": pcm_b64, "sample_rate": _cfg["sample_rate"]},
+            timeout=15,
+        )
+        face_data, voice_data = face_resp.json(), voice_resp.json()
+        if not face_data.get("ok") or not voice_data.get("ok"):
+            return {"ok": False, "error": face_data.get("error") or voice_data.get("error") or "שגיאה לא ידועה"}
+        return {"ok": True, "face": face_data, "voice": voice_data}
+    except Exception as e:
+        log.exception("enrollment submit failed")
+        return {"ok": False, "error": str(e)}

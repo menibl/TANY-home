@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>HomeBot</title>
+<style>
+  :root {
+    --bg: #05070f;
+    --panel: #0c1120;
+    --panel-border: #1c2540;
+    --blue: #38bdf8;
+    --purple: #a78bfa;
+    --green: #4ade80;
+    --yellow: #eab308;
+    --text: #e5e9f5;
+    --text-dim: #7d879e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: radial-gradient(circle at 50% 30%, #0b1230 0%, var(--bg) 70%);
+    color: var(--text);
+    font-family: "Segoe UI", Arial, sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 28px;
+    border-bottom: 1px solid var(--panel-border);
+  }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .brand .logo {
+    width: 40px; height: 40px; border-radius: 50%;
+    background: radial-gradient(circle, var(--blue), #1e3a8a);
+    box-shadow: 0 0 20px var(--blue);
+  }
+  .brand h1 { font-size: 18px; margin: 0; }
+  .brand p { font-size: 12px; margin: 0; color: var(--text-dim); }
+  nav a {
+    color: var(--text-dim); text-decoration: none; margin-inline-start: 20px; font-size: 14px;
+  }
+  nav a:hover, nav a.active { color: var(--blue); }
+
+  main { flex: 1; display: flex; align-items: center; justify-content: center; padding: 40px 20px; gap: 60px; flex-wrap: wrap; }
+
+  .orb-zone { text-align: center; }
+  .greeting { font-size: 26px; font-weight: 600; margin-bottom: 6px; }
+  .subtext { color: var(--text-dim); margin-bottom: 30px; }
+
+  .orb-wrap { position: relative; width: 280px; height: 280px; margin: 0 auto; }
+  .ring {
+    position: absolute; inset: 0; border-radius: 50%;
+    border: 1px solid rgba(56, 189, 248, 0.25);
+    animation: pulse 3s ease-in-out infinite;
+  }
+  .ring:nth-child(2) { inset: -20px; animation-delay: .3s; }
+  .ring:nth-child(3) { inset: -40px; animation-delay: .6s; }
+  @keyframes pulse {
+    0%, 100% { transform: scale(1); opacity: .5; }
+    50% { transform: scale(1.05); opacity: 1; }
+  }
+  .orb {
+    position: absolute; inset: 30px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, #4fd1ff, #0b1c4d 70%);
+    box-shadow: 0 0 60px var(--blue), inset 0 0 40px rgba(0,0,0,.4);
+    transition: box-shadow .4s ease, background .4s ease;
+  }
+  .orb.state-clap, .orb.state-identifying, .orb.state-greeting {
+    background: radial-gradient(circle at 35% 30%, #ffe066, #4d3d0b 70%);
+    box-shadow: 0 0 60px var(--yellow), inset 0 0 40px rgba(0,0,0,.4);
+  }
+  .orb.state-thinking {
+    background: radial-gradient(circle at 35% 30%, #c4b5fd, #2e1065 70%);
+    box-shadow: 0 0 60px var(--purple), inset 0 0 40px rgba(0,0,0,.4);
+  }
+  .orb.state-session, .orb.state-heard, .orb.state-speaking {
+    background: radial-gradient(circle at 35% 30%, #86efac, #0b3d1c 70%);
+    box-shadow: 0 0 60px var(--green), inset 0 0 40px rgba(0,0,0,.4);
+  }
+  .orb.state-error {
+    background: radial-gradient(circle at 35% 30%, #fca5a5, #4d0b0b 70%);
+    box-shadow: 0 0 60px #f87171, inset 0 0 40px rgba(0,0,0,.4);
+  }
+
+  .status-text { margin-top: 26px; font-size: 17px; min-height: 24px; }
+
+  .panel {
+    background: var(--panel); border: 1px solid var(--panel-border); border-radius: 14px;
+    padding: 20px; width: 300px;
+  }
+  .panel h2 { font-size: 13px; letter-spacing: .08em; color: var(--text-dim); margin: 0 0 14px; }
+  .state-card {
+    display: flex; align-items: center; gap: 12px; padding: 12px; border-radius: 10px;
+    margin-bottom: 8px; border: 1px solid transparent; opacity: .45; transition: all .3s ease;
+  }
+  .state-card .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); }
+  .state-card b { display: block; font-size: 14px; }
+  .state-card span { font-size: 12px; color: var(--text-dim); }
+  .state-card.active {
+    opacity: 1; border-color: var(--blue); background: rgba(56,189,248,.08);
+  }
+  .state-card.active .dot { background: var(--blue); box-shadow: 0 0 8px var(--blue); }
+
+  footer { text-align: center; padding: 14px; color: var(--text-dim); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <div class="logo"></div>
+    <div>
+      <h1>HomeBot</h1>
+      <p>עוזר קולי ביתי</p>
+    </div>
+  </div>
+  <nav>
+    <a href="/" class="active">בית</a>
+    <a href="/enroll">משתמש חדש</a>
+  </nav>
+</header>
+
+<main>
+  <div class="orb-zone">
+    <div class="greeting">שלום 👋</div>
+    <div class="subtext">מחא כף פעמיים כדי להתחיל</div>
+    <div class="orb-wrap">
+      <div class="ring"></div>
+      <div class="ring"></div>
+      <div class="ring"></div>
+      <div class="orb" id="orb"></div>
+    </div>
+    <div class="status-text" id="statusText">מאזין למחיאת כף...</div>
+  </div>
+
+  <div class="panel">
+    <h2>סטטוס מערכת</h2>
+    <div id="stateList"></div>
+  </div>
+</main>
+
+<footer>HomeBot — capture-svc</footer>
+
+<script>
+const STATES = [
+  ["listening", "מאזין", "ממתין למחיאת כף כפולה"],
+  ["clap", "מחיאה זוהתה", "מפעיל זיהוי"],
+  ["identifying", "מזהה", "בודק מי זה מול המצלמה"],
+  ["greeting", "מברך", "אומר שלום"],
+  ["session", "בשיחה", "מקשיב לך"],
+  ["heard", "שמע אותך", ""],
+  ["thinking", "חושב", "ממתין לתשובה"],
+  ["speaking", "עונה", "מנגן תשובה"],
+];
+
+const stateList = document.getElementById("stateList");
+const cards = {};
+for (const [key, title, sub] of STATES) {
+  const el = document.createElement("div");
+  el.className = "state-card";
+  el.id = "card-" + key;
+  el.innerHTML = `<div class="dot"></div><div><b>${title}</b><span>${sub}</span></div>`;
+  stateList.appendChild(el);
+  cards[key] = el;
+}
+
+const orb = document.getElementById("orb");
+const statusText = document.getElementById("statusText");
+
+const TEXT_TEMPLATES = {
+  listening: "מאזין למחיאת כף...",
+  clap: "מחיאה זוהתה!",
+  identifying: "מזהה מי זה...",
+  greeting: "אומר שלום...",
+  session: "בשיחה — מקשיב",
+  heard: "שמעתי: {text}",
+  thinking: "חושב...",
+  speaking: "עונה...",
+  error: "שגיאה — ראה לוג",
+};
+
+function applyState(state, text) {
+  orb.className = "orb state-" + state;
+  const tpl = TEXT_TEMPLATES[state] || state;
+  statusText.textContent = text ? tpl.replace("{text}", text) : tpl;
+  for (const key in cards) cards[key].classList.toggle("active", key === state);
+}
+
+function connect() {
+  const ws = new WebSocket(`ws://${location.host}/ws/status`);
+  ws.onmessage = (ev) => {
+    const { state, text } = JSON.parse(ev.data);
+    applyState(state, text);
+  };
+  ws.onclose = () => setTimeout(connect, 1500);
+}
+connect();
+</script>
+</body>
+</html>
