@@ -93,6 +93,10 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - ENDPOINT_ENERGY_THRESHOLD=${ENDPOINT_ENERGY_THRESHOLD:-0.02}
+      - ENDPOINT_SILENCE_MS=${ENDPOINT_SILENCE_MS:-700}
+      - TTS_VOICE=${TTS_VOICE:-alloy}
+      - TTS_MODEL=${TTS_MODEL:-tts-1}
     restart: unless-stopped
     deploy:
       resources:

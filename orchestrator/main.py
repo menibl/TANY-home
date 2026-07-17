@@ -93,7 +93,8 @@ async def session(ws: WebSocket):
     endpointer = SilenceBasedEndpointer()
     history: list[dict] = []
 
-    log.info("session started: user_id=%s certain=%s", user_id, certain)
+    log.info("session started: user_id=%s certain=%s endpoint_threshold=%.3f silence_ms=%d",
+              user_id, certain, endpointer.energy_threshold, endpointer.silence_frames_needed * 20)
 
     try:
         while True:

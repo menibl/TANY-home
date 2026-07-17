@@ -49,7 +49,9 @@ class SilenceBasedEndpointer:
     following at least some speech. Good enough to start; swap for
     webrtcvad/silero-vad later if barge-in handling needs to be tighter."""
 
-    def __init__(self, sample_rate=16000, silence_ms=700, energy_threshold=0.02):
+    def __init__(self, sample_rate=16000, silence_ms=None, energy_threshold=None):
+        silence_ms = silence_ms if silence_ms is not None else int(os.environ.get("ENDPOINT_SILENCE_MS", "700"))
+        energy_threshold = energy_threshold if energy_threshold is not None else float(os.environ.get("ENDPOINT_ENERGY_THRESHOLD", "0.04"))
         self.sample_rate = sample_rate
         self.silence_frames_needed = silence_ms // 20
         self.energy_threshold = energy_threshold

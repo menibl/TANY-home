@@ -1,5 +1,4 @@
 import base64
-import io
 import json
 import os
 
@@ -31,8 +30,12 @@ class EnrollRequest(BaseModel):
 
 
 def _embed(audio_b64: str, sample_rate: int) -> np.ndarray:
+    # audio_b64 is raw PCM16 (no WAV header) — decode straight to a
+    # float32 waveform instead of handing the bytes to preprocess_wav,
+    # which expects a path/WAV-file/ndarray and can't parse headerless PCM
     raw = base64.b64decode(audio_b64)
-    wav = preprocess_wav(io.BytesIO(raw), source_sr=sample_rate)
+    pcm = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+    wav = preprocess_wav(pcm, source_sr=sample_rate)
     return encoder.embed_utterance(wav)
 
 

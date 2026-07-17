@@ -2,6 +2,7 @@ import asyncio
 import base64
 import logging
 import os
+import threading
 
 import numpy as np
 import requests
@@ -154,10 +155,17 @@ async def open_conversation_session(user_id: str | None, certain: bool):
 
     async with websockets.connect(uri, max_size=None) as ws:
         mic_queue: asyncio.Queue[bytes] = asyncio.Queue()
+        speaker_active = threading.Event()
 
         def mic_callback(frame: np.ndarray):
             # runs on PortAudio's own thread, not the event loop thread —
-            # asyncio.Queue isn't thread-safe, so hop back via call_soon_threadsafe
+            # asyncio.Queue isn't thread-safe, so hop back via call_soon_threadsafe.
+            # Drop frames while TTS is playing — without this the mic picks
+            # up the bot's own reply through the speaker and sends it back
+            # as if it were the user talking, triggering an echo of Claude
+            # calls answering itself.
+            if speaker_active.is_set():
+                return
             loop.call_soon_threadsafe(mic_queue.put_nowait, frame.tobytes())
 
         stream = open_mic_stream(mic_callback)
@@ -174,7 +182,11 @@ async def open_conversation_session(user_id: str | None, certain: bool):
                     # full-reply TTS audio from orchestrator (see /session
                     # in orchestrator/main.py) -> play it through the speaker
                     set_status("speaking")
-                    await asyncio.to_thread(play_pcm16, bytes(message), TTS_SAMPLE_RATE)
+                    speaker_active.set()
+                    try:
+                        await asyncio.to_thread(play_pcm16, bytes(message), TTS_SAMPLE_RATE)
+                    finally:
+                        speaker_active.clear()
                     continue
                 import json
                 event = json.loads(message)
@@ -206,32 +218,34 @@ async def main_loop():
         if detector.process_frame(frame):
             loop.call_soon_threadsafe(trigger_event.set)
 
-    set_status("listening")
-    with open_mic_stream(audio_callback):
-        while True:
+    while True:
+        set_status("listening")
+        # only held open while waiting for the clap — held open through the
+        # whole conversation too, it fights the session's own mic stream for
+        # the same device and both end up starved (near-silent audio in)
+        with open_mic_stream(audio_callback):
             await trigger_event.wait()
-            trigger_event.clear()
-            log.info("double-clap detected -> triggering identification")
-            set_status("clap")
-            try:
-                set_status("identifying")
-                result = identify_from_snapshot()
-            except Exception:
-                log.exception("snapshot/identify failed, greeting generically")
-                result = {"certain": False, "best_guess": None}
+        trigger_event.clear()
+        log.info("double-clap detected -> triggering identification")
+        set_status("clap")
+        try:
+            set_status("identifying")
+            result = identify_from_snapshot()
+        except Exception:
+            log.exception("snapshot/identify failed, greeting generically")
+            result = {"certain": False, "best_guess": None}
 
-            set_status("greeting")
-            if result.get("certain"):
-                user_id = result["best_guess"]
-                await say(f"שלום {user_id}")
-            else:
-                user_id = result.get("best_guess")
-                await say("שלום")
+        set_status("greeting")
+        if result.get("certain"):
+            user_id = result["best_guess"]
+            await say(f"שלום {user_id}")
+        else:
+            user_id = result.get("best_guess")
+            await say("שלום")
 
-            set_status("session")
-            await open_conversation_session(user_id, certain=bool(result.get("certain")))
-            log.info("back to listening for double-clap...")
-            set_status("listening")
+        set_status("session")
+        await open_conversation_session(user_id, certain=bool(result.get("certain")))
+        log.info("back to listening for double-clap...")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,12 @@
+# Local Windows dev override — docker-compose merges this automatically,
+# no -f flag needed. The base docker-compose.yml's resource limits are
+# sized for the eventual old/weak target machine (see REQUIREMENTS.md);
+# this machine has 4 cores free in Docker Desktop and orchestrator was
+# sitting at ~1 CPU / 82% of its 512MB memory cap, which is very likely
+# why whisper transcription was taking 20-40s. Delete this file (or tune
+# it down) once running on the real target hardware.
+services:
+  orchestrator:
+    deploy:
+      resources:
+        limits: { cpus: "3", memory: 3g }
