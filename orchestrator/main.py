@@ -1,15 +1,17 @@
+import asyncio
 import json
 import logging
 import os
 
 import httpx
 import redis
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel
 
 from llm_adapters import build_engine
 from personality import load_base_personality, load_user_profile, build_system_prompt
 from skills import build_registry, enabled_tools_for
-from speech_io import transcribe, synthesize, SilenceBasedEndpointer
+from speech_io import transcribe, synthesize, TTS_SAMPLE_RATE, SilenceBasedEndpointer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [orchestrator] %(message)s")
 log = logging.getLogger(__name__)
@@ -60,6 +62,23 @@ async def run_tool_calls(tool_calls: list[dict], user_id: str | None) -> list[di
     return results
 
 
+class TTSRequest(BaseModel):
+    text: str
+
+
+@app.post("/tts")
+async def tts(req: TTSRequest):
+    """Used by capture-svc for the one-off greeting before a conversation
+    session opens (the in-session replies are synthesized and streamed
+    over the /session websocket instead)."""
+    audio = await asyncio.to_thread(synthesize, req.text)
+    return Response(
+        content=audio,
+        media_type="application/octet-stream",
+        headers={"X-Sample-Rate": str(TTS_SAMPLE_RATE)},
+    )
+
+
 @app.websocket("/session")
 async def session(ws: WebSocket):
     await ws.accept()
@@ -99,7 +118,11 @@ async def session(ws: WebSocket):
                         "confidence": confirmed["confidence"],
                     }))
 
-            text = transcribe(utterance)
+            # transcribe/synthesize are blocking (CPU-bound whisper, sync
+            # OpenAI TTS call) — run off the event loop so ping/pong
+            # keepalive frames keep flowing on slow turns and the client
+            # doesn't time out and disconnect mid-response
+            text = await asyncio.to_thread(transcribe, utterance)
             if not text:
                 continue
             await ws.send_text(json.dumps({"type": "partial_transcript", "text": text}))
@@ -124,7 +147,7 @@ async def session(ws: WebSocket):
                 reply_text = reply["text"]
 
             history.append({"role": "assistant", "content": reply_text})
-            audio = synthesize(reply_text)
+            audio = await asyncio.to_thread(synthesize, reply_text)
             await ws.send_bytes(audio)
             await ws.send_text(json.dumps({"type": "end_of_turn"}))
 

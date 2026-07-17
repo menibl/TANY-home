@@ -1,17 +1,27 @@
 """
 STT/TTS live here as swappable functions, not baked into main.py, so you
-can move from faster-whisper -> a hosted STT, or Piper -> ElevenLabs,
-without touching the session loop.
+can move from faster-whisper -> a hosted STT, or OpenAI TTS -> Piper/
+ElevenLabs, without touching the session loop.
 """
-import io
-import wave
+import os
 
 import numpy as np
 from faster_whisper import WhisperModel
+from openai import OpenAI
 
 # "small" is a reasonable CPU-only accuracy/speed tradeoff for Hebrew.
 # Swap to "medium" if this container gets relocated to a beefier machine.
 _stt_model = WhisperModel("small", device="cpu", compute_type="int8")
+
+# Contract with capture-svc: synthesize() always returns raw PCM16 mono
+# at this rate (OpenAI's `pcm` response format is fixed at 24kHz) — the
+# player on the other end must know the rate up front since raw PCM
+# carries no header.
+TTS_SAMPLE_RATE = 24000
+_TTS_VOICE = os.environ.get("TTS_VOICE", "alloy")
+_TTS_MODEL = os.environ.get("TTS_MODEL", "tts-1")
+
+_openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 
 def transcribe(pcm16_bytes: bytes, sample_rate: int = 16000) -> str:
@@ -21,18 +31,17 @@ def transcribe(pcm16_bytes: bytes, sample_rate: int = 16000) -> str:
 
 
 def synthesize(text: str) -> bytes:
-    """
-    TODO: wire up Piper (local, free) or ElevenLabs (cloud, higher quality)
-    here. Returning silence for now so the pipeline is wireable/testable
-    end-to-end before a TTS engine is chosen.
-    """
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(16000)
-        wf.writeframes(b"\x00\x00" * 1600)  # 0.1s of silence placeholder
-    return buf.getvalue()
+    """OpenAI TTS -> raw PCM16 mono @ TTS_SAMPLE_RATE. Swap to Piper
+    (local, free) or ElevenLabs here later without touching callers."""
+    if not text.strip():
+        return b""
+    response = _openai_client.audio.speech.create(
+        model=_TTS_MODEL,
+        voice=_TTS_VOICE,
+        input=text,
+        response_format="pcm",
+    )
+    return response.read()
 
 
 class SilenceBasedEndpointer:

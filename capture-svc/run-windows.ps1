@@ -22,7 +22,9 @@ if (Test-Path $envFile) {
     Write-Warning ".env not found at $envFile - RTSP_URL must be set some other way"
 }
 
-$env:VISION_SVC_URL = "http://localhost:8001"
-$env:ORCHESTRATOR_URL = "http://localhost:8004"
+# 127.0.0.1, not localhost: the websockets client hangs/times out
+# resolving "localhost" to IPv6 first on this Windows/asyncio setup
+$env:VISION_SVC_URL = "http://127.0.0.1:8001"
+$env:ORCHESTRATOR_URL = "http://127.0.0.1:8004"
 
 & "$here\venv\Scripts\python.exe" "$here\main.py"

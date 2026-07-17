@@ -19,13 +19,70 @@ VISION_SVC_URL = os.environ.get("VISION_SVC_URL", "http://vision-id-svc:8001")
 ORCHESTRATOR_URL = os.environ.get("ORCHESTRATOR_URL", "http://orchestrator:8004")
 SAMPLE_RATE = 16000
 FRAME_MS = 20
+# Must match orchestrator/speech_io.py's TTS_SAMPLE_RATE (OpenAI `pcm`
+# responses are fixed at 24kHz) — raw PCM carries no header to read this from.
+TTS_SAMPLE_RATE = 24000
 
 detector = DoubleClapDetector(
     sample_rate=SAMPLE_RATE,
     frame_ms=FRAME_MS,
     energy_threshold=float(os.environ.get("CLAP_ENERGY_THRESHOLD", "0.35")),
     clap_window_ms=int(os.environ.get("CLAP_WINDOW_MS", "600")),
+    refractory_ms=int(os.environ.get("CLAP_REFRACTORY_MS", "250")),
 )
+log.info("clap detector config: threshold=%.3f window_ms=%d refractory_ms=%d",
+          detector.energy_threshold, detector.clap_window_ms, detector.refractory_ms)
+
+
+def _select_mic_stream_params():
+    """Prefer a WASAPI input device at its own native sample rate.
+    Opening the default device directly at 16kHz (MME on Windows) was
+    observed to produce periodic buffer glitches that read as false
+    high-energy spikes and break clap detection entirely. Falls back to
+    the default device at SAMPLE_RATE when no WASAPI device exists
+    (e.g. Linux, where this problem doesn't happen)."""
+    try:
+        for i, dev in enumerate(sd.query_devices()):
+            if dev["max_input_channels"] > 0:
+                hostapi = sd.query_hostapis(dev["hostapi"])["name"]
+                if "WASAPI" in hostapi:
+                    return i, int(dev["default_samplerate"])
+    except Exception:
+        log.exception("WASAPI device lookup failed, using default input device")
+    return None, SAMPLE_RATE
+
+
+_MIC_DEVICE, _MIC_NATIVE_RATE = _select_mic_stream_params()
+_DOWNSAMPLE_FACTOR = max(1, _MIC_NATIVE_RATE // SAMPLE_RATE)
+log.info("mic input: device=%s native_rate=%d downsample_factor=%d",
+          _MIC_DEVICE, _MIC_NATIVE_RATE, _DOWNSAMPLE_FACTOR)
+
+
+def _downsample(frame: np.ndarray) -> np.ndarray:
+    if _DOWNSAMPLE_FACTOR == 1:
+        return frame
+    n = (len(frame) // _DOWNSAMPLE_FACTOR) * _DOWNSAMPLE_FACTOR
+    return frame[:n].reshape(-1, _DOWNSAMPLE_FACTOR).mean(axis=1).astype(np.int16)
+
+
+def open_mic_stream(frame_callback):
+    """Opens an input stream that always delivers SAMPLE_RATE (16kHz)
+    int16 mono frames to frame_callback(frame: np.ndarray), regardless
+    of the underlying device's native rate."""
+    native_frame_size = int(_MIC_NATIVE_RATE * FRAME_MS / 1000)
+
+    def _cb(indata, frames, time_info, status):
+        raw = np.frombuffer(bytes(indata), dtype=np.int16)
+        frame_callback(_downsample(raw))
+
+    return sd.RawInputStream(
+        samplerate=_MIC_NATIVE_RATE,
+        blocksize=native_frame_size,
+        dtype="int16",
+        channels=1,
+        device=_MIC_DEVICE,
+        callback=_cb,
+    )
 
 
 def identify_from_snapshot() -> dict:
@@ -41,12 +98,34 @@ def identify_from_snapshot() -> dict:
     return resp.json()
 
 
-def say(text: str):
-    """Placeholder TTS hook — wire up Piper/edge-tts/ElevenLabs here.
-    Kept as a separate function so swapping TTS engines never touches
-    the trigger/identification logic above it."""
+def play_pcm16(audio_bytes: bytes, sample_rate: int):
+    """OpenAI's `pcm` TTS output comes back at a few percent of full
+    scale (near-inaudible on real speakers), so normalize to a sane
+    peak before playing."""
+    if not audio_bytes:
+        return
+    samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float64)
+    peak = np.abs(samples).max()
+    if peak > 0:
+        samples = samples / peak * 30000
+    sd.play(samples.astype(np.int16), samplerate=sample_rate, blocking=True)
+
+
+async def say(text: str):
+    """Fetches TTS audio for the one-off greeting from the orchestrator
+    and plays it through the local speaker. Kept as a separate function
+    so swapping TTS engines never touches the trigger/identification
+    logic above it — the engine itself lives in orchestrator/speech_io.py."""
     log.info("TTS -> %r", text)
-    # TODO: synthesize `text` and play through the local speaker
+    try:
+        resp = await asyncio.to_thread(
+            requests.post, f"{ORCHESTRATOR_URL}/tts", json={"text": text}, timeout=15
+        )
+        resp.raise_for_status()
+        rate = int(resp.headers.get("X-Sample-Rate", TTS_SAMPLE_RATE))
+        await asyncio.to_thread(play_pcm16, resp.content, rate)
+    except Exception:
+        log.exception("TTS playback failed")
 
 
 async def open_conversation_session(user_id: str | None, certain: bool):
@@ -58,19 +137,17 @@ async def open_conversation_session(user_id: str | None, certain: bool):
 
     log.info("opening conversation session: certain=%s user_id=%s", certain, user_id)
 
+    loop = asyncio.get_running_loop()
+
     async with websockets.connect(uri, max_size=None) as ws:
         mic_queue: asyncio.Queue[bytes] = asyncio.Queue()
 
-        def mic_callback(indata, frames, time_info, status):
-            mic_queue.put_nowait(bytes(indata))
+        def mic_callback(frame: np.ndarray):
+            # runs on PortAudio's own thread, not the event loop thread —
+            # asyncio.Queue isn't thread-safe, so hop back via call_soon_threadsafe
+            loop.call_soon_threadsafe(mic_queue.put_nowait, frame.tobytes())
 
-        stream = sd.RawInputStream(
-            samplerate=SAMPLE_RATE,
-            blocksize=int(SAMPLE_RATE * FRAME_MS / 1000),
-            dtype="int16",
-            channels=1,
-            callback=mic_callback,
-        )
+        stream = open_mic_stream(mic_callback)
 
         async def send_mic_audio():
             with stream:
@@ -81,8 +158,9 @@ async def open_conversation_session(user_id: str | None, certain: bool):
         async def receive_events():
             async for message in ws:
                 if isinstance(message, (bytes, bytearray)):
-                    # raw TTS audio chunk from orchestrator -> play it
-                    # TODO: feed to speaker output stream
+                    # full-reply TTS audio from orchestrator (see /session
+                    # in orchestrator/main.py) -> play it through the speaker
+                    await asyncio.to_thread(play_pcm16, bytes(message), TTS_SAMPLE_RATE)
                     continue
                 import json
                 event = json.loads(message)
@@ -101,22 +179,16 @@ async def open_conversation_session(user_id: str | None, certain: bool):
 
 async def main_loop():
     log.info("capture-svc up. listening for double-clap...")
-    frame_size = int(SAMPLE_RATE * FRAME_MS / 1000)
-
+    loop = asyncio.get_running_loop()
     trigger_event = asyncio.Event()
 
-    def audio_callback(indata, frames, time_info, status):
-        frame = np.frombuffer(bytes(indata), dtype=np.int16)
+    def audio_callback(frame: np.ndarray):
+        # runs on PortAudio's own thread, not the event loop thread —
+        # asyncio.Event isn't thread-safe, so hop back via call_soon_threadsafe
         if detector.process_frame(frame):
-            trigger_event.set()
+            loop.call_soon_threadsafe(trigger_event.set)
 
-    with sd.RawInputStream(
-        samplerate=SAMPLE_RATE,
-        blocksize=frame_size,
-        dtype="int16",
-        channels=1,
-        callback=audio_callback,
-    ):
+    with open_mic_stream(audio_callback):
         while True:
             await trigger_event.wait()
             trigger_event.clear()
@@ -129,10 +201,10 @@ async def main_loop():
 
             if result.get("certain"):
                 user_id = result["best_guess"]
-                say(f"שלום {user_id}")
+                await say(f"שלום {user_id}")
             else:
                 user_id = result.get("best_guess")
-                say("שלום")
+                await say("שלום")
 
             await open_conversation_session(user_id, certain=bool(result.get("certain")))
             log.info("back to listening for double-clap...")
