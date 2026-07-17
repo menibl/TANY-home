@@ -1,5 +1,3 @@
-version: "3.9"
-
 # ============================================================================
 # HomeBot — home voice assistant (clap trigger -> person ID -> voice ID ->
 # live chat -> TANY integration).
@@ -20,27 +18,35 @@ version: "3.9"
 services:
 
   # -- Stage 1: always listening for double-clap, grabs RTSP snapshot -------
-  capture-svc:
-    build: ./capture-svc
-    container_name: homebot-capture
-    devices:
-      - /dev/snd:/dev/snd          # microphone + speaker access
-    environment:
-      - RTSP_URL=${RTSP_URL}
-      - VISION_SVC_URL=http://vision-id-svc:8001
-      - ORCHESTRATOR_URL=http://orchestrator:8004
-      - CLAP_WINDOW_MS=600          # max time between the two claps
-      - CLAP_ENERGY_THRESHOLD=0.35  # tune to your room's noise floor
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits: { cpus: "0.5", memory: 256m }   # this must stay tiny
-    networks: [homebot]
+  # NOT containerized on Windows: Docker Desktop (WSL2) does not pass
+  # /dev/snd (ALSA) through to Linux containers, so this service cannot
+  # reach the host microphone from inside Docker on this machine. Run it
+  # natively instead — see capture-svc/README-windows.md. Left here,
+  # commented out, for when this moves to a real Linux host/RPi where
+  # /dev/snd passthrough works.
+  # capture-svc:
+  #   build: ./capture-svc
+  #   container_name: homebot-capture
+  #   devices:
+  #     - /dev/snd:/dev/snd          # microphone + speaker access
+  #   environment:
+  #     - RTSP_URL=${RTSP_URL}
+  #     - VISION_SVC_URL=http://vision-id-svc:8001
+  #     - ORCHESTRATOR_URL=http://orchestrator:8004
+  #     - CLAP_WINDOW_MS=600          # max time between the two claps
+  #     - CLAP_ENERGY_THRESHOLD=0.35  # tune to your room's noise floor
+  #   restart: unless-stopped
+  #   deploy:
+  #     resources:
+  #       limits: { cpus: "0.5", memory: 256m }   # this must stay tiny
+  #   networks: [homebot]
 
   # -- Stage 2: face + soft-biometrics identification ------------------------
   vision-id-svc:
     build: ./vision-id-svc
     container_name: homebot-vision-id
+    ports:
+      - "8001:8001"        # exposed to host so native capture-svc can reach it
     environment:
       - PROFILE_STORE_URL=redis://profile-store:6379
       - MATCH_THRESHOLD=0.55         # cosine similarity floor for a "hit"
@@ -54,6 +60,8 @@ services:
   voice-id-svc:
     build: ./voice-id-svc
     container_name: homebot-voice-id
+    ports:
+      - "8002:8002"
     environment:
       - PROFILE_STORE_URL=redis://profile-store:6379
       - MATCH_THRESHOLD=0.75
@@ -76,6 +84,8 @@ services:
   orchestrator:
     build: ./orchestrator
     container_name: homebot-orchestrator
+    ports:
+      - "8004:8004"
     environment:
       - PROFILE_STORE_URL=redis://profile-store:6379
       - TANY_BRIDGE_URL=http://tany-bridge:8005
@@ -93,6 +103,8 @@ services:
   tany-bridge:
     build: ./tany-bridge
     container_name: homebot-tany-bridge
+    ports:
+      - "8005:8005"
     environment:
       - TANY_MCP_URL=${TANY_MCP_URL}
       - TANY_API_KEY=${TANY_API_KEY}
