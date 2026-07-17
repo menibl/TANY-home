@@ -1,0 +1,107 @@
+version: "3.9"
+
+# ============================================================================
+# HomeBot — home voice assistant (clap trigger -> person ID -> voice ID ->
+# live chat -> TANY integration).
+#
+# Every service talks to every other service ONLY over the "homebot" network
+# using its DNS name (e.g. http://vision-id-svc:8001). That is the whole
+# trick for later relocation: if a container needs to move to a Raspberry Pi
+# or another machine on the LAN, you do NOT touch any code — you just:
+#   1. Run that one service on the new machine (same Dockerfile, exposed port)
+#   2. Change its URL env var on whichever services call it
+#     (e.g. VISION_SVC_URL=http://192.168.1.50:8001 instead of
+#      http://vision-id-svc:8001)
+#
+# capture-svc is the ONLY service that should stay on the machine physically
+# wired to the mic/speaker/camera. Everything else is relocatable.
+# ============================================================================
+
+services:
+
+  # -- Stage 1: always listening for double-clap, grabs RTSP snapshot -------
+  capture-svc:
+    build: ./capture-svc
+    container_name: homebot-capture
+    devices:
+      - /dev/snd:/dev/snd          # microphone + speaker access
+    environment:
+      - RTSP_URL=${RTSP_URL}
+      - VISION_SVC_URL=http://vision-id-svc:8001
+      - ORCHESTRATOR_URL=http://orchestrator:8004
+      - CLAP_WINDOW_MS=600          # max time between the two claps
+      - CLAP_ENERGY_THRESHOLD=0.35  # tune to your room's noise floor
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 256m }   # this must stay tiny
+    networks: [homebot]
+
+  # -- Stage 2: face + soft-biometrics identification ------------------------
+  vision-id-svc:
+    build: ./vision-id-svc
+    container_name: homebot-vision-id
+    environment:
+      - PROFILE_STORE_URL=redis://profile-store:6379
+      - MATCH_THRESHOLD=0.55         # cosine similarity floor for a "hit"
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits: { cpus: "1.5", memory: 1g }
+    networks: [homebot]
+
+  # -- Stage 3: voice identification (fallback / confirmation) --------------
+  voice-id-svc:
+    build: ./voice-id-svc
+    container_name: homebot-voice-id
+    environment:
+      - PROFILE_STORE_URL=redis://profile-store:6379
+      - MATCH_THRESHOLD=0.75
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits: { cpus: "1", memory: 512m }
+    networks: [homebot]
+
+  # -- Shared profile / embeddings / per-user settings store -----------------
+  profile-store:
+    image: redis:7-alpine
+    container_name: homebot-profile-store
+    volumes:
+      - profile-data:/data
+    command: ["redis-server", "--appendonly", "yes"]
+    networks: [homebot]
+
+  # -- Stage 4+5: conversation state machine, LLM adapter, skill routing ----
+  orchestrator:
+    build: ./orchestrator
+    container_name: homebot-orchestrator
+    environment:
+      - PROFILE_STORE_URL=redis://profile-store:6379
+      - TANY_BRIDGE_URL=http://tany-bridge:8005
+      - LLM_PROVIDER=claude            # claude | openai | gemini
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits: { cpus: "1", memory: 512m }   # LLM call itself runs in the cloud
+    networks: [homebot]
+
+  # -- TANY integration bridge (MCP client) ----------------------------------
+  tany-bridge:
+    build: ./tany-bridge
+    container_name: homebot-tany-bridge
+    environment:
+      - TANY_MCP_URL=${TANY_MCP_URL}
+      - TANY_API_KEY=${TANY_API_KEY}
+    restart: unless-stopped
+    networks: [homebot]
+
+networks:
+  homebot:
+    driver: bridge
+
+volumes:
+  profile-data:

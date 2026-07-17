@@ -1,0 +1,5 @@
+numpy==1.26.4
+sounddevice==0.4.6
+opencv-python-headless==4.9.0.80
+requests==2.31.0
+websockets==12.0
