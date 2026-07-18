@@ -65,6 +65,7 @@
   }
   .orb {
     position: absolute; inset: 30px; border-radius: 50%;
+    cursor: pointer;
     background: radial-gradient(circle at 35% 30%, #4fd1ff, #0b1c4d 70%);
     box-shadow: 0 0 60px var(--blue), inset 0 0 40px rgba(0,0,0,.4);
     transition: box-shadow .4s ease, background .4s ease;
@@ -85,6 +86,8 @@
     background: radial-gradient(circle at 35% 30%, #fca5a5, #4d0b0b 70%);
     box-shadow: 0 0 60px #f87171, inset 0 0 40px rgba(0,0,0,.4);
   }
+  .orb:hover { filter: brightness(1.15); }
+  .orb:active { filter: brightness(0.9); }
 
   .status-text { margin-top: 26px; font-size: 17px; min-height: 24px; }
 
@@ -126,7 +129,7 @@
 <main>
   <div class="orb-zone">
     <div class="greeting">שלום 👋</div>
-    <div class="subtext">מחא כף פעמיים כדי להתחיל</div>
+    <div class="subtext">מחא כף פעמיים, או לחץ על הכדור, כדי להתחיל</div>
     <div class="orb-wrap">
       <div class="ring"></div>
       <div class="ring"></div>
@@ -198,6 +201,14 @@ function connect() {
   ws.onclose = () => setTimeout(connect, 1500);
 }
 connect();
+
+orb.addEventListener("click", async () => {
+  try {
+    await fetch("/api/trigger", { method: "POST" });
+  } catch (e) {
+    // status panel will still reflect whatever main.py ends up doing
+  }
+});
 </script>
 </body>
 </html>

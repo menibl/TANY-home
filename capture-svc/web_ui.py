@@ -31,12 +31,24 @@ _cfg = {}
 
 
 def configure(*, rtsp_url, vision_svc_url, voice_svc_url, open_mic_stream,
-              grab_snapshots, sample_rate, mic_yield_requested, mic_yielded, mic_resume):
+              grab_snapshots, sample_rate, mic_yield_requested, mic_yielded, mic_resume,
+              manual_trigger_event):
     _cfg.update(
         rtsp_url=rtsp_url, vision_svc_url=vision_svc_url, voice_svc_url=voice_svc_url,
         open_mic_stream=open_mic_stream, grab_snapshots=grab_snapshots, sample_rate=sample_rate,
         mic_yield_requested=mic_yield_requested, mic_yielded=mic_yielded, mic_resume=mic_resume,
+        manual_trigger_event=manual_trigger_event,
     )
+
+
+@app.post("/api/trigger")
+async def manual_trigger():
+    """The dashboard's "click the orb" button — fires the exact same
+    flow as a real double-clap, except identification uses the local
+    webcam (see main.py's manual_trigger_event) since clicking obviously
+    means you're at the computer, not wherever the RTSP camera points."""
+    _cfg["manual_trigger_event"].set()
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------- status ws

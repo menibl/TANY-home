@@ -9,7 +9,7 @@ import sounddevice as sd
 import websockets
 
 from clap_detector import DoubleClapDetector
-from rtsp_snapshot import grab_snapshots
+from rtsp_snapshot import grab_snapshots, grab_webcam_snapshots
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [capture-svc] %(message)s")
 log = logging.getLogger(__name__)
@@ -44,6 +44,12 @@ import web_ui
 mic_yield_requested = asyncio.Event()
 mic_yielded = asyncio.Event()
 mic_resume = asyncio.Event()
+
+# Set by the dashboard's "click the orb" button — same trigger as a real
+# double-clap, except identification uses the local webcam instead of the
+# RTSP camera (the whole point of a clap trigger is not being at the
+# computer; a click means you obviously are).
+manual_trigger_event = asyncio.Event()
 
 
 def set_status(state: str, text: str = ""):
@@ -101,10 +107,14 @@ def open_mic_stream(frame_callback):
     )
 
 
-def identify_from_snapshot() -> dict:
+def identify_from_snapshot(source: str = "rtsp") -> dict:
     """Stage 1 -> Stage 2 handoff. Blocking on purpose — this happens
-    once per trigger, not in the audio hot path."""
-    frames = grab_snapshots(RTSP_URL, num_frames=2)
+    once per trigger, not in the audio hot path. `source` is "rtsp" for
+    a real clap or "webcam" for the dashboard's manual trigger button."""
+    if source == "webcam":
+        frames = grab_webcam_snapshots(num_frames=2)
+    else:
+        frames = grab_snapshots(RTSP_URL, num_frames=2)
     resp = requests.post(
         f"{VISION_SVC_URL}/identify",
         json={"image_b64": frames[0]},
@@ -232,9 +242,10 @@ async def main_loop():
         # the same device and both end up starved (near-silent audio in)
         with open_mic_stream(audio_callback):
             wait_clap = asyncio.create_task(trigger_event.wait())
+            wait_manual = asyncio.create_task(manual_trigger_event.wait())
             wait_yield = asyncio.create_task(mic_yield_requested.wait())
             done, pending = await asyncio.wait(
-                {wait_clap, wait_yield}, return_when=asyncio.FIRST_COMPLETED
+                {wait_clap, wait_manual, wait_yield}, return_when=asyncio.FIRST_COMPLETED
             )
             for t in pending:
                 t.cancel()
@@ -248,12 +259,18 @@ async def main_loop():
             mic_yielded.clear()
             continue
 
-        trigger_event.clear()
-        log.info("double-clap detected -> triggering identification")
+        if wait_manual in done:
+            manual_trigger_event.clear()
+            snapshot_source = "webcam"
+        else:
+            trigger_event.clear()
+            snapshot_source = "rtsp"
+
+        log.info("trigger detected (%s) -> triggering identification", snapshot_source)
         set_status("clap")
         try:
             set_status("identifying")
-            result = identify_from_snapshot()
+            result = identify_from_snapshot(source=snapshot_source)
         except Exception:
             log.exception("snapshot/identify failed, greeting generically")
             result = {"certain": False, "best_guess": None}
@@ -290,6 +307,7 @@ async def run_all():
         mic_yield_requested=mic_yield_requested,
         mic_yielded=mic_yielded,
         mic_resume=mic_resume,
+        manual_trigger_event=manual_trigger_event,
     )
     config = uvicorn.Config(web_ui.app, host="127.0.0.1", port=WEB_UI_PORT, log_level="warning")
     server = uvicorn.Server(config)
