@@ -127,3 +127,24 @@ def enroll(req: EnrollRequest):
     existing.append(emb.tolist())
     r.set(key, json.dumps(existing))
     return {"ok": True, "samples_stored": len(existing)}
+
+
+@app.get("/users")
+def list_users():
+    """Lets the dashboard's enrollment page show who's already
+    registered and how many samples they have, instead of enrolling
+    blind (add-only — this was the only way to see a user was stuck
+    with one bad sample dragging its match confidence down)."""
+    users = []
+    for user_id in _known_users():
+        raw = r.get(f"user:{user_id}:face_embeddings")
+        users.append({"user_id": user_id, "samples": len(json.loads(raw)) if raw else 0})
+    return {"users": users}
+
+
+@app.delete("/users/{user_id}")
+def delete_user(user_id: str):
+    """Clears this user's stored samples so re-enrolling starts fresh
+    instead of just piling more samples on top of old bad ones."""
+    deleted = r.delete(f"user:{user_id}:face_embeddings")
+    return {"ok": True, "deleted": bool(deleted)}

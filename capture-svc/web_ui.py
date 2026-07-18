@@ -230,3 +230,42 @@ async def submit_enrollment(req: SubmitRequest):
     except Exception as e:
         log.exception("enrollment submit failed")
         return {"ok": False, "error": str(e)}
+
+
+@app.get("/api/enroll/users")
+async def list_enrolled_users():
+    """Merges vision-id-svc's and voice-id-svc's per-user sample counts
+    into one list keyed by user_id, so the enrollment page can show who's
+    registered instead of enrolling blind — this was the only way to
+    notice a user was stuck on one bad low-confidence sample."""
+    try:
+        face_resp, voice_resp = await asyncio.gather(
+            asyncio.to_thread(requests.get, f"{_cfg['vision_svc_url']}/users", timeout=5),
+            asyncio.to_thread(requests.get, f"{_cfg['voice_svc_url']}/users", timeout=5),
+        )
+        face_counts = {u["user_id"]: u["samples"] for u in face_resp.json().get("users", [])}
+        voice_counts = {u["user_id"]: u["samples"] for u in voice_resp.json().get("users", [])}
+        all_ids = sorted(set(face_counts) | set(voice_counts))
+        return {"ok": True, "users": [
+            {"user_id": uid, "face_samples": face_counts.get(uid, 0), "voice_samples": voice_counts.get(uid, 0)}
+            for uid in all_ids
+        ]}
+    except Exception as e:
+        log.exception("listing enrolled users failed")
+        return {"ok": False, "error": str(e), "users": []}
+
+
+@app.delete("/api/enroll/users/{user_id}")
+async def delete_enrolled_user(user_id: str):
+    """Clears both the face and voice samples for a user so they can be
+    re-enrolled from scratch instead of just piling more samples on top
+    of old ones (enroll only ever appends)."""
+    try:
+        await asyncio.gather(
+            asyncio.to_thread(requests.delete, f"{_cfg['vision_svc_url']}/users/{user_id}", timeout=5),
+            asyncio.to_thread(requests.delete, f"{_cfg['voice_svc_url']}/users/{user_id}", timeout=5),
+        )
+        return {"ok": True}
+    except Exception as e:
+        log.exception("deleting enrolled user failed")
+        return {"ok": False, "error": str(e)}

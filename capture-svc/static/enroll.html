@@ -60,6 +60,16 @@
   .submit-row button { padding: 14px 40px; font-size: 16px; }
 
   .note { font-size: 12px; color: var(--text-dim); margin-top: 8px; }
+
+  .user-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 0; border-bottom: 1px solid var(--panel-border);
+  }
+  .user-row:last-child { border-bottom: none; }
+  .user-row .name { font-size: 14px; }
+  .user-row .counts { font-size: 12px; color: var(--text-dim); margin-inline-start: 8px; }
+  .user-row .actions { display: flex; gap: 8px; }
+  .user-row button { padding: 6px 12px; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -77,6 +87,11 @@
 <main>
   <h2>הכרת משתמש חדש</h2>
   <p class="lead">מוסיף תמונת פנים + תמונת גוף מהמצלמה, והקלטת קול קצרה — כדי שהמערכת תזהה אותך בפעם הבאה.</p>
+
+  <div class="step" id="usersStep">
+    <div class="step-head"><b>משתמשים רשומים</b><span>הוספת דגימה = יותר דיוק בזיהוי</span></div>
+    <div id="usersList" class="note">טוען...</div>
+  </div>
 
   <div class="field">
     <label>שם / מזהה</label>
@@ -114,6 +129,48 @@
 let faceImageB64 = null;
 let recording = false;
 let voiceRecorded = false;
+
+async function loadUsers() {
+  const listEl = document.getElementById("usersList");
+  try {
+    const res = await fetch("/api/enroll/users");
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || "שגיאה");
+    if (data.users.length === 0) {
+      listEl.innerHTML = `<div class="note">אין עדיין משתמשים רשומים.</div>`;
+      return;
+    }
+    listEl.innerHTML = "";
+    listEl.className = "";
+    for (const u of data.users) {
+      const row = document.createElement("div");
+      row.className = "user-row";
+      row.innerHTML = `
+        <div><span class="name">${u.user_id}</span>
+          <span class="counts">פנים: ${u.face_samples} · קול: ${u.voice_samples}</span></div>
+        <div class="actions">
+          <button onclick="prefillFor('${u.user_id}')">הוסף דגימה</button>
+          <button class="danger" onclick="deleteUser('${u.user_id}')">מחק</button>
+        </div>`;
+      listEl.appendChild(row);
+    }
+  } catch (e) {
+    listEl.innerHTML = `<div class="err-badge">✗ לא ניתן לטעון משתמשים: ${e.message}</div>`;
+  }
+}
+
+function prefillFor(userId) {
+  document.getElementById("userId").value = userId;
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+async function deleteUser(userId) {
+  if (!confirm(`למחוק את כל הדגימות של "${userId}"? אי אפשר לבטל.`)) return;
+  await fetch(`/api/enroll/users/${encodeURIComponent(userId)}`, { method: "DELETE" });
+  loadUsers();
+}
+
+loadUsers();
 
 async function captureFace() {
   const res = await fetch("/api/enroll/capture-face", { method: "POST" });
@@ -180,6 +237,7 @@ async function submitEnrollment() {
   document.getElementById("submitBtn").disabled = false;
   if (data.ok) {
     submitStatus.innerHTML = `<div class="ok-badge">✓ נשמר בהצלחה — פנים: ${data.face.samples_stored} דגימות, קול: ${data.voice.samples_stored} דגימות</div>`;
+    loadUsers();
   } else {
     submitStatus.innerHTML = `<div class="err-badge">✗ ${data.error}</div>`;
   }
