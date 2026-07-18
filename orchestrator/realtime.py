@@ -18,6 +18,7 @@ backend's only job is:
 Not used by the default LLM_PROVIDER=claude flow at all — this only
 activates for the dashboard's realtime mode.
 """
+import hashlib
 import json
 import logging
 import os
@@ -84,7 +85,14 @@ def register(app, *, r, registry: dict[str, Skill], tany_bridge_url: str):
                 "https://api.openai.com/v1/realtime/calls",
                 headers={
                     "Authorization": f"Bearer {OPENAI_API_KEY}",
-                    "OpenAI-Safety-Identifier": f"homebot-{user_id or 'guest'}",
+                    # HTTP headers are ASCII-only — user_id is Hebrew
+                    # ("מני"), which crashed here with UnicodeEncodeError.
+                    # This header only needs to be a stable per-user
+                    # identifier for OpenAI's abuse monitoring, not
+                    # human-readable, so hash it instead of encoding it.
+                    "OpenAI-Safety-Identifier": "homebot-" + hashlib.sha256(
+                        (user_id or "guest").encode("utf-8")
+                    ).hexdigest()[:16],
                 },
                 files={
                     "sdp": (None, sdp_offer),
