@@ -78,7 +78,7 @@
     background: radial-gradient(circle at 35% 30%, #c4b5fd, #2e1065 70%);
     box-shadow: 0 0 60px var(--purple), inset 0 0 40px rgba(0,0,0,.4);
   }
-  .orb.state-session, .orb.state-heard, .orb.state-speaking {
+  .orb.state-session, .orb.state-heard, .orb.state-speaking, .orb.state-realtime {
     background: radial-gradient(circle at 35% 30%, #86efac, #0b3d1c 70%);
     box-shadow: 0 0 60px var(--green), inset 0 0 40px rgba(0,0,0,.4);
   }
@@ -145,6 +145,7 @@
     </div>
     <div class="status-text" id="statusText">מאזין למחיאת כף...</div>
     <button id="endBtn" class="end-btn" style="display:none">סיים שיחה</button>
+    <audio id="realtimeAudio" autoplay style="display:none"></audio>
   </div>
 
   <div class="panel">
@@ -190,13 +191,18 @@ const TEXT_TEMPLATES = {
   heard: "שמעתי: {text}",
   thinking: "חושב...",
   speaking: "עונה...",
+  realtime_start: "מתחבר לשיחה חיה...",
+  realtime: "בשיחה חיה (Realtime)",
   error: "שגיאה — ראה לוג",
 };
 
 const endBtn = document.getElementById("endBtn");
 // visible any time we're mid-flow — from the clap through to the live
 // conversation — hidden while just idly listening for the next trigger
-const IN_FLOW_STATES = new Set(["clap", "identifying", "greeting", "session", "heard", "thinking", "speaking"]);
+const IN_FLOW_STATES = new Set([
+  "clap", "identifying", "greeting", "session", "heard", "thinking", "speaking",
+  "realtime_start", "realtime",
+]);
 
 function applyState(state, text) {
   orb.className = "orb state-" + state;
@@ -206,15 +212,140 @@ function applyState(state, text) {
   endBtn.style.display = IN_FLOW_STATES.has(state) ? "inline-block" : "none";
 }
 
+// ------------------------------------------------------------- realtime
+// OpenAI Realtime over WebRTC: audio flows browser<->OpenAI directly
+// (this page IS the mic/speaker for that leg) — capture-svc only tells
+// us to start (with who + how confidently they were identified) and
+// otherwise stays out of the way. See orchestrator/realtime.py for the
+// SDP-brokering + tool-call endpoints this talks to.
+const ORCHESTRATOR_URL = "http://127.0.0.1:8004"; // matches run-windows.ps1's ORCHESTRATOR_URL
+const realtimeAudio = document.getElementById("realtimeAudio");
+let realtimePC = null;
+let realtimeDC = null;
+let realtimeUserId = null;
+
+async function startRealtimeSession(userId, certain) {
+  if (realtimePC) return; // already in one
+  realtimeUserId = userId || null;
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const pc = new RTCPeerConnection();
+    realtimePC = pc;
+    stream.getAudioTracks().forEach((track) => pc.addTrack(track, stream));
+    pc.ontrack = (ev) => { realtimeAudio.srcObject = ev.streams[0]; };
+
+    const dc = pc.createDataChannel("oai-events");
+    realtimeDC = dc;
+    dc.addEventListener("message", (ev) => handleRealtimeEvent(JSON.parse(ev.data)));
+
+    pc.addEventListener("connectionstatechange", () => {
+      if (["disconnected", "failed", "closed"].includes(pc.connectionState) && realtimePC === pc) {
+        stopRealtimeSession();
+        applyState("listening", "");
+      }
+    });
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    await waitForIceGathering(pc);
+
+    const qs = `user_id=${encodeURIComponent(userId || "")}&certain=${certain ? "true" : "false"}`;
+    const resp = await fetch(`${ORCHESTRATOR_URL}/realtime/session?${qs}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/sdp" },
+      body: pc.localDescription.sdp,
+    });
+    if (!resp.ok) throw new Error(`session create failed: ${resp.status}`);
+    const answerSdp = await resp.text();
+    await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+
+    applyState("realtime", "");
+  } catch (e) {
+    console.error("realtime session failed to start", e);
+    applyState("error", "realtime: " + e.message);
+    stopRealtimeSession();
+  }
+}
+
+function waitForIceGathering(pc) {
+  if (pc.iceGatheringState === "complete") return Promise.resolve();
+  return new Promise((resolve) => {
+    function check() {
+      if (pc.iceGatheringState === "complete") {
+        pc.removeEventListener("icegatheringstatechange", check);
+        resolve();
+      }
+    }
+    pc.addEventListener("icegatheringstatechange", check);
+  });
+}
+
+async function handleRealtimeEvent(event) {
+  switch (event.type) {
+    case "input_audio_buffer.speech_started":
+      applyState("heard", "");
+      break;
+    case "response.function_call_arguments.done":
+      await runRealtimeToolCall(event);
+      break;
+    case "response.done":
+      applyState("realtime", "");
+      break;
+  }
+}
+
+async function runRealtimeToolCall(event) {
+  applyState("thinking", event.name);
+  let result;
+  try {
+    const resp = await fetch(`${ORCHESTRATOR_URL}/realtime/tool-call`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: event.name,
+        arguments: JSON.parse(event.arguments || "{}"),
+        user_id: realtimeUserId,
+      }),
+    });
+    result = await resp.json();
+  } catch (e) {
+    result = { ok: false, error: String(e) };
+  }
+  realtimeDC.send(JSON.stringify({
+    type: "conversation.item.create",
+    item: { type: "function_call_output", call_id: event.call_id, output: JSON.stringify(result) },
+  }));
+  realtimeDC.send(JSON.stringify({ type: "response.create" }));
+}
+
+function stopRealtimeSession() {
+  if (realtimePC) {
+    realtimePC.getSenders().forEach((s) => s.track && s.track.stop());
+    realtimePC.close();
+  }
+  realtimePC = null;
+  realtimeDC = null;
+  realtimeUserId = null;
+}
+
 endBtn.addEventListener("click", () => {
-  fetch("/api/end-session", { method: "POST" }).catch(() => {});
+  if (realtimePC) {
+    stopRealtimeSession();
+    applyState("listening", "");
+  } else {
+    fetch("/api/end-session", { method: "POST" }).catch(() => {});
+  }
 });
 
 function connect() {
   const ws = new WebSocket(`ws://${location.host}/ws/status`);
   ws.onmessage = (ev) => {
-    const { state, text } = JSON.parse(ev.data);
-    applyState(state, text);
+    const msg = JSON.parse(ev.data);
+    applyState(msg.state, msg.text);
+    if (msg.state === "realtime_start") {
+      startRealtimeSession(msg.user_id, msg.certain);
+    }
   };
   ws.onclose = () => setTimeout(connect, 1500);
 }

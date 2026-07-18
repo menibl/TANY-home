@@ -72,12 +72,12 @@ class _Broadcaster:
     def unregister(self, ws: WebSocket):
         self._clients.discard(ws)
 
-    async def send(self, state: str, text: str = ""):
+    async def send(self, payload: dict):
+        data = json.dumps(payload)
         dead = []
-        payload = json.dumps({"state": state, "text": text})
         for ws in self._clients:
             try:
-                await ws.send_text(payload)
+                await ws.send_text(data)
             except Exception:
                 dead.append(ws)
         for ws in dead:
@@ -88,13 +88,18 @@ broadcaster = _Broadcaster()
 _last_state = {"state": "listening", "text": ""}
 
 
-def broadcast_status(state: str, text: str = ""):
+def broadcast_status(state: str, text: str = "", **extra):
     """Thread/coroutine-agnostic entry point called from main.py's set_status().
-    Schedules the actual send onto whatever loop is running this app."""
-    _last_state["state"], _last_state["text"] = state, text
+    Schedules the actual send onto whatever loop is running this app.
+    `extra` is for payloads beyond state/text — e.g. realtime mode passes
+    user_id/certain so the browser knows who it's opening a WebRTC session
+    for without a separate round-trip."""
+    payload = {"state": state, "text": text, **extra}
+    _last_state.clear()
+    _last_state.update(payload)
     try:
         loop = asyncio.get_running_loop()
-        loop.create_task(broadcaster.send(state, text))
+        loop.create_task(broadcaster.send(payload))
     except RuntimeError:
         pass  # no loop yet (startup) — the client fetches current state on connect
 
@@ -102,7 +107,7 @@ def broadcast_status(state: str, text: str = ""):
 @app.websocket("/ws/status")
 async def ws_status(ws: WebSocket):
     await broadcaster.register(ws)
-    await ws.send_text(json.dumps({"state": _last_state["state"], "text": _last_state["text"]}))
+    await ws.send_text(json.dumps(_last_state))
     try:
         while True:
             await ws.receive_text()  # client sends nothing; just keep the socket open

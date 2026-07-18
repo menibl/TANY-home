@@ -19,6 +19,12 @@ VISION_SVC_URL = os.environ.get("VISION_SVC_URL", "http://vision-id-svc:8001")
 VOICE_SVC_URL = os.environ.get("VOICE_SVC_URL", "http://voice-id-svc:8002")
 ORCHESTRATOR_URL = os.environ.get("ORCHESTRATOR_URL", "http://orchestrator:8004")
 WEB_UI_PORT = int(os.environ.get("WEB_UI_PORT", "8010"))
+# When on: the live conversation is native OpenAI Realtime speech-to-
+# speech, browser<->OpenAI directly over WebRTC (see orchestrator/
+# realtime.py and static/dashboard.html) instead of the Claude cascaded
+# pipeline (capture-svc mic -> orchestrator STT -> Claude -> TTS ->
+# capture-svc speaker). Much lower latency; costs Claude as the model.
+USE_REALTIME = os.environ.get("USE_REALTIME", "0") == "1"
 SAMPLE_RATE = 16000
 FRAME_MS = 20
 # Must match orchestrator/speech_io.py's TTS_SAMPLE_RATE (OpenAI `pcm`
@@ -312,14 +318,24 @@ async def main_loop():
             user_id = result.get("best_guess")
             await say("שלום")
 
-        set_status("session")
-        try:
-            await open_conversation_session(user_id, certain=bool(result.get("certain")))
-        except Exception:
-            # a dropped connection mid-conversation must not take down the
-            # whole process (including the web dashboard) — log it and go
-            # back to listening for the next clap instead
-            log.exception("conversation session ended abnormally")
+        if USE_REALTIME:
+            # the browser (dashboard.html) takes it from here — opens the
+            # WebRTC session straight to OpenAI and handles the whole
+            # conversation itself, so capture-svc doesn't block; it just
+            # hands off who's talking and goes back to listening
+            web_ui.broadcast_status(
+                "realtime_start", "",
+                user_id=user_id, certain=bool(result.get("certain")),
+            )
+        else:
+            set_status("session")
+            try:
+                await open_conversation_session(user_id, certain=bool(result.get("certain")))
+            except Exception:
+                # a dropped connection mid-conversation must not take down
+                # the whole process (including the web dashboard) — log it
+                # and go back to listening for the next clap instead
+                log.exception("conversation session ended abnormally")
         log.info("back to listening for double-clap...")
 
 

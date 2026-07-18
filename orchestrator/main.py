@@ -7,6 +7,7 @@ import time
 import httpx
 import redis
 from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from llm_adapters import build_engine
@@ -19,6 +20,17 @@ log = logging.getLogger(__name__)
 
 app = FastAPI(title="homebot-orchestrator")
 
+# The dashboard (capture-svc's web_ui, a different origin/port) calls
+# /realtime/session and /realtime/tool-call directly from the browser —
+# both are local-only endpoints on a home LAN, so a wide-open CORS policy
+# here isn't the risk it'd be on a public deployment.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 PROFILE_STORE_URL = os.environ.get("PROFILE_STORE_URL", "redis://profile-store:6379")
 TANY_BRIDGE_URL = os.environ.get("TANY_BRIDGE_URL", "http://tany-bridge:8005")
 VOICE_SVC_URL = os.environ.get("VOICE_SVC_URL", "http://voice-id-svc:8002")
@@ -27,6 +39,9 @@ LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "claude")
 r = redis.from_url(PROFILE_STORE_URL)
 registry = build_registry(TANY_BRIDGE_URL)
 engine = build_engine(LLM_PROVIDER)
+
+import realtime as realtime_mod
+realtime_mod.register(app, r=r, registry=registry, tany_bridge_url=TANY_BRIDGE_URL)
 
 
 async def confirm_identity_from_audio(utterance_pcm16: bytes) -> dict | None:
