@@ -35,6 +35,7 @@ router = APIRouter()
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 REALTIME_MODEL = os.environ.get("REALTIME_MODEL", "gpt-realtime")
 REALTIME_VOICE = os.environ.get("REALTIME_VOICE", "marin")
+VOICE_SVC_URL = os.environ.get("VOICE_SVC_URL", "http://voice-id-svc:8002")
 
 
 def _to_realtime_tools(claude_style_tools: list[dict]) -> list[dict]:
@@ -127,6 +128,43 @@ def register(app, *, r, registry: dict[str, Skill], tany_bridge_url: str):
 
         from fastapi import Response
         return Response(content=resp.text, media_type="application/sdp")
+
+    @router.post("/realtime/identify-voice")
+    async def identify_voice(request: Request):
+        """The realtime path has no server-side leg to run the Claude
+        path's mid-conversation voice confirmation on (audio never
+        touches this backend), so dashboard.html grabs a short raw PCM
+        sample of its own mic input and posts it here once, early in the
+        call, if the face check at trigger time wasn't certain. On a hit,
+        returns fresh instructions (built the same way as session
+        creation) so the browser can push them into the live session via
+        session.update instead of restarting the call."""
+        body = await request.json()
+        audio_b64 = body.get("audio_b64")
+        sample_rate = body.get("sample_rate", 16000)
+        if not audio_b64:
+            return {"certain": False, "error": "no audio"}
+
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(
+                    f"{VOICE_SVC_URL}/identify",
+                    json={"audio_b64": audio_b64, "sample_rate": sample_rate},
+                )
+                resp.raise_for_status()
+                result = resp.json()
+        except Exception as e:
+            log.exception("voice-id call failed")
+            return {"certain": False, "error": str(e)}
+
+        if result.get("certain"):
+            user_id = result["best_guess"]
+            base_personality = load_base_personality(r)
+            user_profile = load_user_profile(r, user_id)
+            instructions = build_system_prompt(base_personality, user_profile, user_id)
+            result["user_id"] = user_id
+            result["instructions"] = instructions
+        return result
 
     @router.post("/realtime/tool-call")
     async def realtime_tool_call(request: Request):

@@ -222,11 +222,19 @@ const ORCHESTRATOR_URL = "http://127.0.0.1:8004"; // matches run-windows.ps1's O
 const realtimeAudio = document.getElementById("realtimeAudio");
 let realtimePC = null;
 let realtimeDC = null;
+let realtimeLocalTrack = null;
 let realtimeUserId = null;
+let realtimeCertain = false;
+let voiceIdAudioCtx = null;
+let voiceIdChunks = [];
+let voiceIdSent = false;
 
 async function startRealtimeSession(userId, certain) {
   if (realtimePC) return; // already in one
   realtimeUserId = userId || null;
+  realtimeCertain = !!certain;
+  voiceIdChunks = [];
+  voiceIdSent = false;
 
   try {
     // explicit AEC/noise/gain constraints — a laptop's mic picking up its
@@ -238,8 +246,16 @@ async function startRealtimeSession(userId, certain) {
     });
     const pc = new RTCPeerConnection();
     realtimePC = pc;
+    realtimeLocalTrack = stream.getAudioTracks()[0];
     stream.getAudioTracks().forEach((track) => pc.addTrack(track, stream));
     pc.ontrack = (ev) => { realtimeAudio.srcObject = ev.streams[0]; };
+
+    // The face check at trigger time (capture-svc) may not have been
+    // certain — voice is the fallback, same idea as the Claude path's
+    // mid-conversation confirm, just done client-side since realtime
+    // audio never reaches our backend otherwise. Tap the same mic stream
+    // with Web Audio to grab a raw PCM sample of the first thing they say.
+    if (!realtimeCertain) startVoiceIdCapture(stream);
 
     const dc = pc.createDataChannel("oai-events");
     realtimeDC = dc;
@@ -293,6 +309,81 @@ function waitForIceGathering(pc) {
   });
 }
 
+function startVoiceIdCapture(stream) {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  voiceIdAudioCtx = new AC();
+  const source = voiceIdAudioCtx.createMediaStreamSource(stream);
+  // ScriptProcessorNode is deprecated in favor of AudioWorklet, but needs
+  // no separate module file to load and is plenty for "grab some PCM
+  // once" — not worth the extra moving part here.
+  const processor = voiceIdAudioCtx.createScriptProcessor(4096, 1, 1);
+  processor.onaudioprocess = (ev) => {
+    if (voiceIdSent) return;
+    voiceIdChunks.push(new Float32Array(ev.inputBuffer.getChannelData(0)));
+    // cap at ~6s so this can't grow unbounded if speech_stopped never fires
+    const totalSamples = voiceIdChunks.reduce((n, c) => n + c.length, 0);
+    if (totalSamples > voiceIdAudioCtx.sampleRate * 6) voiceIdChunks.shift();
+  };
+  source.connect(processor);
+  processor.connect(voiceIdAudioCtx.destination);
+  voiceIdAudioCtx._processorNode = processor; // keep a reference for cleanup
+}
+
+function stopVoiceIdCapture() {
+  if (voiceIdAudioCtx) {
+    voiceIdAudioCtx.close().catch(() => {});
+    voiceIdAudioCtx = null;
+  }
+  voiceIdChunks = [];
+}
+
+async function sendVoiceIdCapture() {
+  if (!voiceIdAudioCtx || voiceIdChunks.length === 0) return;
+  voiceIdSent = true;
+  const sampleRate = voiceIdAudioCtx.sampleRate;
+
+  const totalLen = voiceIdChunks.reduce((n, c) => n + c.length, 0);
+  const merged = new Float32Array(totalLen);
+  let offset = 0;
+  for (const chunk of voiceIdChunks) { merged.set(chunk, offset); offset += chunk.length; }
+
+  const pcm16 = new Int16Array(merged.length);
+  for (let i = 0; i < merged.length; i++) {
+    const s = Math.max(-1, Math.min(1, merged[i]));
+    pcm16[i] = s < 0 ? s * 32768 : s * 32767;
+  }
+  let binary = "";
+  const bytes = new Uint8Array(pcm16.buffer);
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  const audioB64 = btoa(binary);
+
+  try {
+    const resp = await fetch(`${ORCHESTRATOR_URL}/realtime/identify-voice`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ audio_b64: audioB64, sample_rate: sampleRate }),
+    });
+    const result = await resp.json();
+    if (result.certain) applyIdentityUpdate(result);
+  } catch (e) {
+    console.warn("[realtime] voice-id capture failed", e);
+  } finally {
+    stopVoiceIdCapture(); // one attempt per session — done either way
+  }
+}
+
+function applyIdentityUpdate(result) {
+  realtimeUserId = result.user_id;
+  realtimeCertain = true;
+  console.log("[realtime] identity confirmed by voice:", result.user_id);
+  if (realtimeDC && realtimeDC.readyState === "open") {
+    realtimeDC.send(JSON.stringify({
+      type: "session.update",
+      session: { type: "realtime", instructions: result.instructions },
+    }));
+  }
+}
+
 async function handleRealtimeEvent(event) {
   // logged for every event type — this is the only place a cut-short
   // reply is visible at all, since realtime audio never touches our own
@@ -302,11 +393,27 @@ async function handleRealtimeEvent(event) {
   console.log("[realtime]", event.type, event);
 
   switch (event.type) {
+    // echoCancellation + a higher VAD threshold (orchestrator/realtime.py)
+    // weren't enough on their own — the mic still occasionally picked up
+    // the assistant's own voice through the speaker, server_vad read that
+    // as the user talking, and cancelled the response mid-sentence, which
+    // triggered a new response, which got interrupted the same way, on
+    // and on. Muting the local track for the exact duration the assistant
+    // is actually outputting audio makes that physically impossible —
+    // the cost is you can't barge in mid-reply, only speak after it ends.
+    case "output_audio_buffer.started":
+      if (realtimeLocalTrack) realtimeLocalTrack.enabled = false;
+      break;
+    case "output_audio_buffer.stopped":
+    case "output_audio_buffer.cleared":
+      if (realtimeLocalTrack) realtimeLocalTrack.enabled = true;
+      break;
     case "input_audio_buffer.speech_started":
       applyState("heard", "");
       break;
     case "input_audio_buffer.speech_stopped":
       applyState("thinking", "");
+      if (!realtimeCertain && !voiceIdSent) sendVoiceIdCapture();
       break;
     case "response.function_call_arguments.done":
       await runRealtimeToolCall(event);
@@ -360,9 +467,12 @@ function stopRealtimeSession() {
     realtimePC.getSenders().forEach((s) => s.track && s.track.stop());
     realtimePC.close();
   }
+  stopVoiceIdCapture();
   realtimePC = null;
   realtimeDC = null;
+  realtimeLocalTrack = null;
   realtimeUserId = null;
+  realtimeCertain = false;
 }
 
 endBtn.addEventListener("click", () => {
