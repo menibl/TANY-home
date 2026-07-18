@@ -229,7 +229,13 @@ async function startRealtimeSession(userId, certain) {
   realtimeUserId = userId || null;
 
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    // explicit AEC/noise/gain constraints — a laptop's mic picking up its
+    // own speaker mid-reply (the model hears "itself" and barges in on
+    // its own answer) is exactly what echoCancellation is for; leaving
+    // this to browser defaults isn't reliable enough to count on
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
     const pc = new RTCPeerConnection();
     realtimePC = pc;
     stream.getAudioTracks().forEach((track) => pc.addTrack(track, stream));

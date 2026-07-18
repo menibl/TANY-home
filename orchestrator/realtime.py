@@ -76,7 +76,15 @@ def register(app, *, r, registry: dict[str, Skill], tany_bridge_url: str):
             "type": "realtime",
             "model": REALTIME_MODEL,
             "instructions": system_prompt,
-            "audio": {"output": {"voice": REALTIME_VOICE}},
+            "audio": {
+                # slightly less trigger-happy than the 0.5 default —
+                # belt-and-suspenders against a laptop's mic picking up
+                # its own speaker mid-reply and barging in on itself.
+                # The real fix is client-side echoCancellation
+                # (dashboard.html); this just adds margin on top of it.
+                "input": {"turn_detection": {"type": "server_vad", "threshold": 0.6, "silence_duration_ms": 600}},
+                "output": {"voice": REALTIME_VOICE},
+            },
             "tools": tools,
         }
 
