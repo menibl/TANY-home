@@ -38,6 +38,17 @@ REALTIME_VOICE = os.environ.get("REALTIME_VOICE", "marin")
 VOICE_SVC_URL = os.environ.get("VOICE_SVC_URL", "http://voice-id-svc:8002")
 
 
+# Client-side-only tool — dashboard.html intercepts this call itself
+# (closes the WebRTC session after the farewell line finishes playing)
+# instead of routing it to /realtime/tool-call like the real skills.
+END_CONVERSATION_TOOL = {
+    "type": "function",
+    "name": "end_conversation",
+    "description": "קורא לפונקציה הזו כשהמשתמש מסמן שהשיחה נגמרה (למשל 'תודה, סיימתי', 'זהו תודה', 'להתראות'). אמור קודם משפט סיום קצר וחם, ואז קרא לפונקציה.",
+    "parameters": {"type": "object", "properties": {}},
+}
+
+
 def _to_realtime_tools(claude_style_tools: list[dict]) -> list[dict]:
     """Claude's tool schema uses input_schema; OpenAI Realtime uses
     parameters, and each entry is flat (no nested "function" wrapper —
@@ -72,6 +83,7 @@ def register(app, *, r, registry: dict[str, Skill], tany_bridge_url: str):
         user_profile = load_user_profile(r, user_id if certain else None)
         system_prompt = build_system_prompt(base_personality, user_profile, user_id if certain else None)
         tools = _to_realtime_tools(enabled_tools_for(registry, user_profile["skills_enabled"]))
+        tools.append(END_CONVERSATION_TOOL)
 
         # The greeting used to be a separate call through the old TTS
         # pipeline (a different voice/API from the Realtime session's own
@@ -84,7 +96,11 @@ def register(app, *, r, registry: dict[str, Skill], tany_bridge_url: str):
             if greeting_name else
             'פתח את השיחה מיד באמירת "שלום" ותו לא, ואז המתן שהמשתמש ידבר.'
         )
-        system_prompt = f"{system_prompt}\n\n{greeting_instruction}"
+        end_instruction = (
+            'כשהמשתמש אומר משהו שמסמן שהשיחה נגמרה (למשל "תודה, סיימתי", "זהו תודה", "להתראות") — '
+            "אמור משפט סיום קצר וחם ואז קרא לפונקציה end_conversation."
+        )
+        system_prompt = f"{system_prompt}\n\n{greeting_instruction}\n{end_instruction}"
 
         session_config = {
             "type": "realtime",

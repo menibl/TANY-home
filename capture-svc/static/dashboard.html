@@ -228,6 +228,19 @@ let realtimeCertain = false;
 let voiceIdAudioCtx = null;
 let voiceIdChunks = [];
 let voiceIdSent = false;
+let endingConversation = false;
+let silenceTimer = null;
+const SILENCE_TIMEOUT_MS = 20000; // no new speech this long after a reply -> end on its own
+
+function resetSilenceTimer() {
+  if (silenceTimer) clearTimeout(silenceTimer);
+  if (!realtimePC) return;
+  silenceTimer = setTimeout(() => {
+    console.log("[realtime] ending session — silence timeout");
+    stopRealtimeSession();
+    applyState("listening", "");
+  }, SILENCE_TIMEOUT_MS);
+}
 
 async function startRealtimeSession(userId, certain) {
   if (realtimePC) return; // already in one
@@ -235,6 +248,7 @@ async function startRealtimeSession(userId, certain) {
   realtimeCertain = !!certain;
   voiceIdChunks = [];
   voiceIdSent = false;
+  endingConversation = false;
 
   try {
     // explicit AEC/noise/gain constraints — a laptop's mic picking up its
@@ -407,16 +421,35 @@ async function handleRealtimeEvent(event) {
     case "output_audio_buffer.stopped":
     case "output_audio_buffer.cleared":
       if (realtimeLocalTrack) realtimeLocalTrack.enabled = true;
+      if (endingConversation) {
+        stopRealtimeSession();
+        applyState("listening", "");
+      } else {
+        resetSilenceTimer();
+      }
       break;
     case "input_audio_buffer.speech_started":
       applyState("heard", "");
+      resetSilenceTimer();
       break;
     case "input_audio_buffer.speech_stopped":
       applyState("thinking", "");
       if (!realtimeCertain && !voiceIdSent) sendVoiceIdCapture();
       break;
     case "response.function_call_arguments.done":
-      await runRealtimeToolCall(event);
+      if (event.name === "end_conversation") {
+        // client-side-only tool (see orchestrator/realtime.py) — ack it
+        // so the model doesn't error, but let the farewell line it's
+        // already speaking finish (output_audio_buffer.stopped) before
+        // actually closing the connection
+        endingConversation = true;
+        realtimeDC.send(JSON.stringify({
+          type: "conversation.item.create",
+          item: { type: "function_call_output", call_id: event.call_id, output: '{"ok":true}' },
+        }));
+      } else {
+        await runRealtimeToolCall(event);
+      }
       break;
     case "response.done":
       // status is "completed" normally; "cancelled"/"incomplete"/
@@ -468,6 +501,8 @@ function stopRealtimeSession() {
     realtimePC.close();
   }
   stopVoiceIdCapture();
+  if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+  endingConversation = false;
   realtimePC = null;
   realtimeDC = null;
   realtimeLocalTrack = null;
