@@ -49,7 +49,7 @@ services:
       - "8001:8001"        # exposed to host so native capture-svc can reach it
     environment:
       - PROFILE_STORE_URL=redis://profile-store:6379
-      - MATCH_THRESHOLD=0.55         # cosine similarity floor for a "hit"
+      - MATCH_THRESHOLD=${VISION_MATCH_THRESHOLD:-0.55}   # face-match confidence floor for a "hit"
     restart: unless-stopped
     deploy:
       resources:
