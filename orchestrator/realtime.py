@@ -72,6 +72,19 @@ def register(app, *, r, registry: dict[str, Skill], tany_bridge_url: str):
         system_prompt = build_system_prompt(base_personality, user_profile, user_id if certain else None)
         tools = _to_realtime_tools(enabled_tools_for(registry, user_profile["skills_enabled"]))
 
+        # The greeting used to be a separate call through the old TTS
+        # pipeline (a different voice/API from the Realtime session's own
+        # voice) — folded it into this session's own first turn instead,
+        # so there's one continuous voice from "שלום" onward. dashboard.html
+        # triggers this opening turn as soon as the data channel is ready.
+        greeting_name = user_id if (certain and user_id) else None
+        greeting_instruction = (
+            f'פתח את השיחה מיד באמירת "שלום {greeting_name}" ותו לא, ואז המתן שהמשתמש ידבר.'
+            if greeting_name else
+            'פתח את השיחה מיד באמירת "שלום" ותו לא, ואז המתן שהמשתמש ידבר.'
+        )
+        system_prompt = f"{system_prompt}\n\n{greeting_instruction}"
+
         session_config = {
             "type": "realtime",
             "model": REALTIME_MODEL,

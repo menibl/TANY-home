@@ -244,6 +244,12 @@ async function startRealtimeSession(userId, certain) {
     const dc = pc.createDataChannel("oai-events");
     realtimeDC = dc;
     dc.addEventListener("message", (ev) => handleRealtimeEvent(JSON.parse(ev.data)));
+    // instructions (see orchestrator/realtime.py) tell the model to open
+    // with a greeting, but it won't speak until prompted — this is that
+    // prompt, replacing the old separate TTS-based greeting call
+    dc.addEventListener("open", () => {
+      dc.send(JSON.stringify({ type: "response.create" }));
+    });
 
     pc.addEventListener("connectionstatechange", () => {
       if (["disconnected", "failed", "closed"].includes(pc.connectionState) && realtimePC === pc) {
@@ -288,15 +294,39 @@ function waitForIceGathering(pc) {
 }
 
 async function handleRealtimeEvent(event) {
+  // logged for every event type — this is the only place a cut-short
+  // reply is visible at all, since realtime audio never touches our own
+  // servers/logs (browser<->OpenAI directly). Open devtools (F12) ->
+  // Console before reproducing a cutoff and look for
+  // response.done/response.cancelled/error here.
+  console.log("[realtime]", event.type, event);
+
   switch (event.type) {
     case "input_audio_buffer.speech_started":
       applyState("heard", "");
+      break;
+    case "input_audio_buffer.speech_stopped":
+      applyState("thinking", "");
       break;
     case "response.function_call_arguments.done":
       await runRealtimeToolCall(event);
       break;
     case "response.done":
+      // status is "completed" normally; "cancelled"/"incomplete"/
+      // "failed" here is the model getting cut off — event.response
+      // carries the reason (status_details)
+      if (event.response && event.response.status !== "completed") {
+        console.warn("[realtime] response ended abnormally:", event.response.status, event.response.status_details);
+      }
       applyState("realtime", "");
+      break;
+    case "response.cancelled":
+      console.warn("[realtime] response cancelled", event);
+      applyState("realtime", "");
+      break;
+    case "error":
+      console.error("[realtime] error event", event);
+      applyState("error", event.error?.message || "realtime error");
       break;
   }
 }

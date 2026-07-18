@@ -310,24 +310,28 @@ async def main_loop():
             log.exception("snapshot/identify failed, greeting generically")
             result = {"certain": False, "best_guess": None}
 
-        set_status("greeting")
-        if result.get("certain"):
-            user_id = result["best_guess"]
-            await say(f"שלום {user_id}")
-        else:
-            user_id = result.get("best_guess")
-            await say("שלום")
+        user_id = result.get("best_guess")
 
         if USE_REALTIME:
             # the browser (dashboard.html) takes it from here — opens the
             # WebRTC session straight to OpenAI and handles the whole
             # conversation itself, so capture-svc doesn't block; it just
-            # hands off who's talking and goes back to listening
+            # hands off who's talking and goes back to listening. No
+            # say() here: the greeting is now the Realtime session's own
+            # first turn (see orchestrator/realtime.py) so the whole
+            # conversation is one continuous voice instead of switching
+            # from the old TTS pipeline partway through.
+            set_status("greeting")
             web_ui.broadcast_status(
                 "realtime_start", "",
                 user_id=user_id, certain=bool(result.get("certain")),
             )
         else:
+            set_status("greeting")
+            if result.get("certain"):
+                await say(f"שלום {user_id}")
+            else:
+                await say("שלום")
             set_status("session")
             try:
                 await open_conversation_session(user_id, certain=bool(result.get("certain")))
