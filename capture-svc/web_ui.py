@@ -32,12 +32,12 @@ _cfg = {}
 
 def configure(*, rtsp_url, vision_svc_url, voice_svc_url, open_mic_stream,
               grab_snapshots, sample_rate, mic_yield_requested, mic_yielded, mic_resume,
-              manual_trigger_event):
+              manual_trigger_event, end_session_event):
     _cfg.update(
         rtsp_url=rtsp_url, vision_svc_url=vision_svc_url, voice_svc_url=voice_svc_url,
         open_mic_stream=open_mic_stream, grab_snapshots=grab_snapshots, sample_rate=sample_rate,
         mic_yield_requested=mic_yield_requested, mic_yielded=mic_yielded, mic_resume=mic_resume,
-        manual_trigger_event=manual_trigger_event,
+        manual_trigger_event=manual_trigger_event, end_session_event=end_session_event,
     )
 
 
@@ -48,6 +48,15 @@ async def manual_trigger():
     webcam (see main.py's manual_trigger_event) since clicking obviously
     means you're at the computer, not wherever the RTSP camera points."""
     _cfg["manual_trigger_event"].set()
+    return {"ok": True}
+
+
+@app.post("/api/end-session")
+async def end_session():
+    """The dashboard's "סיים שיחה" button — ends the active conversation
+    on demand instead of waiting for the orchestrator to. A no-op if
+    there's no session open."""
+    _cfg["end_session_event"].set()
     return {"ok": True}
 
 

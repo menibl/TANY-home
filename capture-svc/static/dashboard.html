@@ -91,6 +91,13 @@
 
   .status-text { margin-top: 26px; font-size: 17px; min-height: 24px; }
 
+  .end-btn {
+    margin-top: 18px; padding: 9px 22px; border-radius: 20px; cursor: pointer;
+    background: transparent; border: 1px solid #f87171; color: #f87171; font-size: 13px;
+    transition: all .2s ease;
+  }
+  .end-btn:hover { background: rgba(248,113,113,.12); }
+
   .panel {
     background: var(--panel); border: 1px solid var(--panel-border); border-radius: 14px;
     padding: 20px; width: 300px;
@@ -137,6 +144,7 @@
       <div class="orb" id="orb"></div>
     </div>
     <div class="status-text" id="statusText">מאזין למחיאת כף...</div>
+    <button id="endBtn" class="end-btn" style="display:none">סיים שיחה</button>
   </div>
 
   <div class="panel">
@@ -185,12 +193,22 @@ const TEXT_TEMPLATES = {
   error: "שגיאה — ראה לוג",
 };
 
+const endBtn = document.getElementById("endBtn");
+// visible any time we're mid-flow — from the clap through to the live
+// conversation — hidden while just idly listening for the next trigger
+const IN_FLOW_STATES = new Set(["clap", "identifying", "greeting", "session", "heard", "thinking", "speaking"]);
+
 function applyState(state, text) {
   orb.className = "orb state-" + state;
   const tpl = TEXT_TEMPLATES[state] || state;
   statusText.textContent = text ? tpl.replace("{text}", text) : tpl;
   for (const key in cards) cards[key].classList.toggle("active", key === state);
+  endBtn.style.display = IN_FLOW_STATES.has(state) ? "inline-block" : "none";
 }
+
+endBtn.addEventListener("click", () => {
+  fetch("/api/end-session", { method: "POST" }).catch(() => {});
+});
 
 function connect() {
   const ws = new WebSocket(`ws://${location.host}/ws/status`);

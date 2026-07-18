@@ -51,6 +51,10 @@ mic_resume = asyncio.Event()
 # computer; a click means you obviously are).
 manual_trigger_event = asyncio.Event()
 
+# Set by the dashboard's "סיים שיחה" button to end the active
+# conversation on demand instead of waiting for the orchestrator to.
+end_session_event = asyncio.Event()
+
 
 def set_status(state: str, text: str = ""):
     web_ui.broadcast_status(state, text)
@@ -221,7 +225,32 @@ async def open_conversation_session(user_id: str | None, certain: bool):
                     log.info("session ended by orchestrator")
                     return
 
-        await asyncio.gather(send_mic_audio(), receive_events())
+        mic_task = asyncio.create_task(send_mic_audio())
+        events_task = asyncio.create_task(receive_events())
+        end_task = asyncio.create_task(end_session_event.wait())
+
+        done, pending = await asyncio.wait(
+            {mic_task, events_task, end_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+
+        if end_task in done:
+            end_session_event.clear()
+            log.info("session ended by user (dashboard button)")
+        else:
+            end_task.cancel()
+
+        for t in pending:
+            t.cancel()
+        for t in pending:
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+        # a real failure in the mic/events pump (not our own cancellation)
+        # should still surface to main_loop's outer try/except and get logged
+        for t in done:
+            if t is not end_task:
+                await t
 
 
 async def main_loop():
@@ -308,6 +337,7 @@ async def run_all():
         mic_yielded=mic_yielded,
         mic_resume=mic_resume,
         manual_trigger_event=manual_trigger_event,
+        end_session_event=end_session_event,
     )
     config = uvicorn.Config(web_ui.app, host="127.0.0.1", port=WEB_UI_PORT, log_level="warning")
     server = uvicorn.Server(config)
