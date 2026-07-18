@@ -9,9 +9,12 @@ import numpy as np
 from faster_whisper import WhisperModel
 from openai import OpenAI
 
-# "small" is a reasonable CPU-only accuracy/speed tradeoff for Hebrew.
-# Swap to "medium" if this container gets relocated to a beefier machine.
-_stt_model = WhisperModel("small", device="cpu", compute_type="int8")
+# Measured live: "small" took ~8s to transcribe a 3s Hebrew utterance on
+# this machine, which was most of the end-to-end reply latency. "base"
+# trades some accuracy for real-time-flowing conversation. Swap to
+# "small"/"medium" if this container gets relocated to a beefier machine.
+_STT_MODEL_SIZE = os.environ.get("STT_MODEL_SIZE", "base")
+_stt_model = WhisperModel(_STT_MODEL_SIZE, device="cpu", compute_type="int8")
 
 # Contract with capture-svc: synthesize() always returns raw PCM16 mono
 # at this rate (OpenAI's `pcm` response format is fixed at 24kHz) — the

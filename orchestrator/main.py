@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 
 import httpx
 import redis
@@ -106,7 +107,9 @@ async def session(ws: WebSocket):
             # Stage 3 fallback: still unidentified -> try to confirm now that
             # we have real speech, and update the system prompt if it lands.
             if not certain:
+                t0 = time.monotonic()
                 confirmed = await confirm_identity_from_audio(utterance)
+                log.info("TIMING voice-id confirm: %.2fs", time.monotonic() - t0)
                 if confirmed:
                     user_id = confirmed["best_guess"]
                     certain = True
@@ -123,12 +126,16 @@ async def session(ws: WebSocket):
             # OpenAI TTS call) — run off the event loop so ping/pong
             # keepalive frames keep flowing on slow turns and the client
             # doesn't time out and disconnect mid-response
+            t0 = time.monotonic()
             text = await asyncio.to_thread(transcribe, utterance)
+            log.info("TIMING whisper transcribe: %.2fs -> %r", time.monotonic() - t0, text)
             if not text:
                 continue
             await ws.send_text(json.dumps({"type": "partial_transcript", "text": text}))
 
+            t0 = time.monotonic()
             reply = await engine.respond(system_prompt, text, tools, history)
+            log.info("TIMING claude respond: %.2fs", time.monotonic() - t0)
             history.append({"role": "user", "content": text})
 
             if reply["tool_calls"]:
@@ -148,7 +155,9 @@ async def session(ws: WebSocket):
                 reply_text = reply["text"]
 
             history.append({"role": "assistant", "content": reply_text})
+            t0 = time.monotonic()
             audio = await asyncio.to_thread(synthesize, reply_text)
+            log.info("TIMING tts synthesize: %.2fs", time.monotonic() - t0)
             await ws.send_bytes(audio)
             await ws.send_text(json.dumps({"type": "end_of_turn"}))
 

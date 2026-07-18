@@ -79,7 +79,7 @@ def _score_against_profile(user_id: str, face_emb, soft_feats: dict) -> dict:
 
     active_weight = sum(BASE_WEIGHTS[k] for k in signals)
     confidence = sum(BASE_WEIGHTS[k] * v for k, v in signals.items()) / active_weight
-    return {"user_id": user_id, "confidence": round(confidence, 3), "signals": signals}
+    return {"user_id": user_id, "confidence": round(float(confidence), 3), "signals": signals}
 
 
 @app.post("/identify")
@@ -101,8 +101,12 @@ def identify(req: IdentifyRequest):
     return {
         "candidates": candidates,
         "best_guess": best["user_id"],
-        "confidence": best["confidence"],
-        "certain": best["confidence"] >= MATCH_THRESHOLD,
+        "confidence": float(best["confidence"]),
+        # numpy.float64 >= float yields numpy.bool_, which FastAPI's
+        # response serialization chokes on ("not iterable") — every real
+        # /identify call was 500ing on this, silently falling back to an
+        # unidentified generic greeting even for an enrolled face
+        "certain": bool(best["confidence"] >= MATCH_THRESHOLD),
     }
 
 
