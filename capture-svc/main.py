@@ -37,9 +37,11 @@ detector = DoubleClapDetector(
     energy_threshold=float(os.environ.get("CLAP_ENERGY_THRESHOLD", "0.35")),
     clap_window_ms=int(os.environ.get("CLAP_WINDOW_MS", "600")),
     refractory_ms=int(os.environ.get("CLAP_REFRACTORY_MS", "250")),
+    max_clap_ms=int(os.environ.get("CLAP_MAX_MS", "60")),
 )
-log.info("clap detector config: threshold=%.3f window_ms=%d refractory_ms=%d",
-          detector.energy_threshold, detector.clap_window_ms, detector.refractory_ms)
+log.info("clap detector config: threshold=%.3f window_ms=%d refractory_ms=%d max_clap_ms=%d",
+          detector.energy_threshold, detector.clap_window_ms, detector.refractory_ms,
+          detector.max_clap_frames * FRAME_MS)
 
 import web_ui
 
