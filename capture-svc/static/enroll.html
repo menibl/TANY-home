@@ -161,6 +161,18 @@ async function loadUsers() {
 
 function prefillFor(userId) {
   document.getElementById("userId").value = userId;
+  // "add a sample" must force a genuinely fresh capture — without this
+  // reset, submitting again without re-capturing silently reused the
+  // *previous* face/voice data, storing an exact duplicate instead of a
+  // new sample (caught live: two "different" voice enrollments for the
+  // same user came back with cosine similarity 1.0 — identical)
+  faceImageB64 = null;
+  voiceRecorded = false;
+  document.getElementById("facePreview").innerHTML = "";
+  document.getElementById("faceStatus").innerHTML = "";
+  document.getElementById("bodyPreview").innerHTML = "";
+  document.getElementById("voiceStatus").innerHTML = "";
+  document.getElementById("submitStatus").innerHTML = "";
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
