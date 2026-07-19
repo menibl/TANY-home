@@ -48,6 +48,21 @@ END_CONVERSATION_TOOL = {
     "parameters": {"type": "object", "properties": {}},
 }
 
+# only added to the tool list when the face check at trigger time had a
+# guess but wasn't confident enough to treat as certain — the model asks
+# the guess as a yes/no question instead of either silently guessing
+# (wrong name = awkward) or greeting generically (ignores a decent guess)
+CONFIRM_IDENTITY_TOOL = {
+    "type": "function",
+    "name": "confirm_identity",
+    "description": "קורא לפונקציה הזו מיד אחרי שהמשתמש ענה על שאלת הזיהוי הפותחת ('אני חושב שאתה X, נכון?'). confirmed=true אם אישר, false אם הכחיש או תיקן.",
+    "parameters": {
+        "type": "object",
+        "properties": {"confirmed": {"type": "boolean"}},
+        "required": ["confirmed"],
+    },
+}
+
 
 def _to_realtime_tools(claude_style_tools: list[dict]) -> list[dict]:
     """Claude's tool schema uses input_schema; OpenAI Realtime uses
@@ -70,6 +85,15 @@ def register(app, *, r, registry: dict[str, Skill], tany_bridge_url: str):
     (Claude cascaded, OpenAI Realtime) share one source of truth for
     personality and tools instead of drifting apart."""
 
+    def _instructions_for(user_id: str) -> str:
+        """Built once identity is certain (confirmed by voice or by the
+        user answering the opening question) — the model's next
+        session.update instructions, no greeting/confirm-identity
+        wrapper needed since the conversation is already underway."""
+        base_personality = load_base_personality(r)
+        user_profile = load_user_profile(r, user_id)
+        return build_system_prompt(base_personality, user_profile, user_id)
+
     @router.post("/realtime/session")
     async def create_realtime_session(request: Request):
         if not OPENAI_API_KEY:
@@ -90,12 +114,28 @@ def register(app, *, r, registry: dict[str, Skill], tany_bridge_url: str):
         # voice) — folded it into this session's own first turn instead,
         # so there's one continuous voice from "שלום" onward. dashboard.html
         # triggers this opening turn as soon as the data channel is ready.
-        greeting_name = user_id if (certain and user_id) else None
-        greeting_instruction = (
-            f'פתח את השיחה מיד באמירת "שלום {greeting_name}" ותו לא, ואז המתן שהמשתמש ידבר.'
-            if greeting_name else
-            'פתח את השיחה מיד באמירת "שלום" ותו לא, ואז המתן שהמשתמש ידבר.'
-        )
+        #
+        # Three cases: certain (face match was confident) -> greet by
+        # name directly. Uncertain but there's a guess (best_guess from
+        # vision-id-svc, just below the confidence floor) -> ask it as a
+        # yes/no question instead of silently guessing wrong or ignoring
+        # a decent guess entirely. No guess at all -> generic greeting,
+        # same as before.
+        if certain and user_id:
+            greeting_instruction = (
+                f'פתח את השיחה מיד באמירת "שלום {user_id}" ותו לא, ואז המתן שהמשתמש ידבר.'
+            )
+        elif user_id:
+            greeting_instruction = (
+                f'פתח את השיחה מיד בשאלה קצרה: "היי, אני חושב שאתה {user_id}, נכון?" ותו לא, '
+                "ואז המתן לתשובה. ברגע שהמשתמש עונה (בין אם אישר, הכחיש, או תיקן את השם) — "
+                "קרא מיד לפונקציה confirm_identity עם התוצאה, ורק אז המשך בשיחה."
+            )
+            tools.append(CONFIRM_IDENTITY_TOOL)
+        else:
+            greeting_instruction = (
+                'פתח את השיחה מיד באמירת "שלום" ותו לא, ואז המתן שהמשתמש ידבר.'
+            )
         end_instruction = (
             'כשהמשתמש אומר משהו שמסמן שהשיחה נגמרה (למשל "תודה, סיימתי", "זהו תודה", "להתראות") — '
             "אמור משפט סיום קצר וחם ואז קרא לפונקציה end_conversation."
@@ -175,12 +215,22 @@ def register(app, *, r, registry: dict[str, Skill], tany_bridge_url: str):
 
         if result.get("certain"):
             user_id = result["best_guess"]
-            base_personality = load_base_personality(r)
-            user_profile = load_user_profile(r, user_id)
-            instructions = build_system_prompt(base_personality, user_profile, user_id)
             result["user_id"] = user_id
-            result["instructions"] = instructions
+            result["instructions"] = _instructions_for(user_id)
         return result
+
+    @router.post("/realtime/confirm-identity")
+    async def confirm_identity(request: Request):
+        """dashboard.html calls this after the model calls the
+        confirm_identity tool with confirmed=true — the user answered
+        "yes" to the opening "I think you're X, right?" question. Same
+        shape as identify-voice's certain branch: fresh instructions to
+        push into the live session via session.update."""
+        body = await request.json()
+        user_id = body.get("user_id")
+        if not user_id:
+            raise HTTPException(400, "user_id required")
+        return {"user_id": user_id, "instructions": _instructions_for(user_id)}
 
     @router.post("/realtime/tool-call")
     async def realtime_tool_call(request: Request):

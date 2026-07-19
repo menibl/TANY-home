@@ -437,7 +437,12 @@ async function handleRealtimeEvent(event) {
       break;
     case "input_audio_buffer.speech_stopped":
       applyState("thinking", "");
-      if (!realtimeCertain && !voiceIdSent) sendVoiceIdCapture();
+      // if there's a face-match guess (realtimeUserId set even though
+      // uncertain), the model is asking it as a yes/no question instead
+      // — resolving identity itself, via confirm_identity below. The
+      // silent voice-embedding fallback is only needed when there was no
+      // guess at all to ask about.
+      if (!realtimeCertain && !voiceIdSent && !realtimeUserId) sendVoiceIdCapture();
       break;
     case "response.function_call_arguments.done":
       if (event.name === "end_conversation") {
@@ -460,6 +465,34 @@ async function handleRealtimeEvent(event) {
           stopRealtimeSession();
           applyState("listening", "");
         }
+      } else if (event.name === "confirm_identity") {
+        // model asked "I think you're X, right?" and just parsed the
+        // answer — ack it, then either lock in the identity (fresh
+        // instructions + tools for that user via session.update, same
+        // mechanism as the voice-id fallback) or drop back to guest and
+        // let the model's own follow-up handle it conversationally
+        const confirmed = JSON.parse(event.arguments || "{}").confirmed;
+        realtimeDC.send(JSON.stringify({
+          type: "conversation.item.create",
+          item: { type: "function_call_output", call_id: event.call_id, output: '{"ok":true}' },
+        }));
+        if (confirmed && realtimeUserId) {
+          try {
+            const resp = await fetch(`${ORCHESTRATOR_URL}/realtime/confirm-identity`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ user_id: realtimeUserId }),
+            });
+            const result = await resp.json();
+            applyIdentityUpdate(result);
+          } catch (e) {
+            console.warn("[realtime] confirm-identity failed", e);
+          }
+        } else {
+          realtimeCertain = false;
+          realtimeUserId = null;
+        }
+        realtimeDC.send(JSON.stringify({ type: "response.create" }));
       } else {
         await runRealtimeToolCall(event);
       }
