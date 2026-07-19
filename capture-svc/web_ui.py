@@ -95,8 +95,16 @@ def broadcast_status(state: str, text: str = "", **extra):
     user_id/certain so the browser knows who it's opening a WebRTC session
     for without a separate round-trip."""
     payload = {"state": state, "text": text, **extra}
-    _last_state.clear()
-    _last_state.update(payload)
+    # "realtime_start" is a one-shot command telling the browser to open a
+    # new WebRTC session, not a steady state — it stays the broadcast
+    # state for the whole conversation (nothing else gets set until it
+    # ends). If it were replayed here, any page reload or WS reconnect
+    # during (or right after) a live conversation would silently launch
+    # another session with no clap/click involved. Only durable states
+    # get remembered for replay; one-shot triggers are sent live only.
+    if state != "realtime_start":
+        _last_state.clear()
+        _last_state.update(payload)
     try:
         loop = asyncio.get_running_loop()
         loop.create_task(broadcaster.send(payload))

@@ -229,6 +229,7 @@ let voiceIdAudioCtx = null;
 let voiceIdChunks = [];
 let voiceIdSent = false;
 let endingConversation = false;
+let audioPlaying = false;
 let silenceTimer = null;
 const SILENCE_TIMEOUT_MS = 20000; // no new speech this long after a reply -> end on its own
 
@@ -416,10 +417,12 @@ async function handleRealtimeEvent(event) {
     // is actually outputting audio makes that physically impossible —
     // the cost is you can't barge in mid-reply, only speak after it ends.
     case "output_audio_buffer.started":
+      audioPlaying = true;
       if (realtimeLocalTrack) realtimeLocalTrack.enabled = false;
       break;
     case "output_audio_buffer.stopped":
     case "output_audio_buffer.cleared":
+      audioPlaying = false;
       if (realtimeLocalTrack) realtimeLocalTrack.enabled = true;
       if (endingConversation) {
         stopRealtimeSession();
@@ -439,14 +442,24 @@ async function handleRealtimeEvent(event) {
     case "response.function_call_arguments.done":
       if (event.name === "end_conversation") {
         // client-side-only tool (see orchestrator/realtime.py) — ack it
-        // so the model doesn't error, but let the farewell line it's
-        // already speaking finish (output_audio_buffer.stopped) before
-        // actually closing the connection
-        endingConversation = true;
+        // so the model doesn't error. The tool call often arrives in a
+        // response with no audio of its own (the farewell line already
+        // finished playing in an earlier response) — in that case there's
+        // no future output_audio_buffer.stopped to hang the close on, so
+        // waiting for one meant sitting idle until the 20s silence
+        // timeout instead of closing right away. Only defer the close if
+        // audio is still actively playing (farewell + tool call landed in
+        // the same response); otherwise end immediately.
         realtimeDC.send(JSON.stringify({
           type: "conversation.item.create",
           item: { type: "function_call_output", call_id: event.call_id, output: '{"ok":true}' },
         }));
+        if (audioPlaying) {
+          endingConversation = true;
+        } else {
+          stopRealtimeSession();
+          applyState("listening", "");
+        }
       } else {
         await runRealtimeToolCall(event);
       }
@@ -499,6 +512,13 @@ function stopRealtimeSession() {
   if (realtimePC) {
     realtimePC.getSenders().forEach((s) => s.track && s.track.stop());
     realtimePC.close();
+    // capture-svc's clap detector was still running the whole time this
+    // realtime session was open (it has no other way to know the browser
+    // is mid-conversation) — short loud bursts in normal speech were
+    // passing the clap duration gate and firing a brand new session on
+    // top of this one every 15-20s. Tell it explicitly so main_loop can
+    // wait for this before re-arming instead of racing it.
+    fetch("/api/end-session", { method: "POST" }).catch(() => {});
   }
   stopVoiceIdCapture();
   if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }

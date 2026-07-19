@@ -328,6 +328,18 @@ async def main_loop():
                 "realtime_start", "",
                 user_id=user_id, certain=bool(result.get("certain")),
             )
+            # main_loop must NOT go back to listening (and reopen its own
+            # mic stream) until the browser's WebRTC session actually
+            # ends — otherwise capture-svc's clap detector runs the whole
+            # time the realtime conversation is live, and short loud
+            # bursts in normal speech (which pass the same duration gate
+            # as a real clap) fire a brand new session on top of the
+            # current one. dashboard.html POSTs /api/end-session from
+            # every exit path (silence timeout, disconnect, manual end,
+            # the end_conversation tool) via stopRealtimeSession().
+            end_session_event.clear()
+            await end_session_event.wait()
+            end_session_event.clear()
         else:
             set_status("greeting")
             if result.get("certain"):
