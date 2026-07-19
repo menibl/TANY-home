@@ -19,7 +19,11 @@ DEFAULT_BASE_PERSONALITY = {
 DEFAULT_USER_PROFILE = {
     "formality": "casual",
     "nickname": None,
-    "skills_enabled": ["shopping_list", "reminders"],
+    "skills_enabled": ["tany_command"],
+    # per-user token from TANY (Bearer, tanyhome_...) — TANY routes
+    # everything internally through one MCP tool, so there's nothing to
+    # scope per-skill here, just per-person auth
+    "tany_token": None,
 }
 
 
@@ -36,7 +40,20 @@ def load_user_profile(r: redis.Redis, user_id: str | None) -> dict:
     if user_id is None:
         return DEFAULT_USER_PROFILE
     raw = r.get(f"user:{user_id}:personality")
-    return json.loads(raw) if raw else DEFAULT_USER_PROFILE
+    if not raw:
+        return DEFAULT_USER_PROFILE
+    # merge over the default so older stored profiles (saved before a
+    # field like tany_token existed) still come back with every key
+    return {**DEFAULT_USER_PROFILE, **json.loads(raw)}
+
+
+def save_user_profile_fields(r: redis.Redis, user_id: str, **fields) -> dict:
+    """Merge-updates the stored profile with the given fields, without
+    clobbering whatever else is already saved for this user."""
+    profile = load_user_profile(r, user_id)
+    profile.update(fields)
+    r.set(f"user:{user_id}:personality", json.dumps(profile, ensure_ascii=False))
+    return profile
 
 
 def build_system_prompt(base: dict, user: dict, user_id: str | None) -> str:

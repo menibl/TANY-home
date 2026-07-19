@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from llm_adapters import build_engine
-from personality import load_base_personality, load_user_profile, build_system_prompt
+from personality import load_base_personality, load_user_profile, build_system_prompt, save_user_profile_fields
 from skills import build_registry, enabled_tools_for
 from speech_io import transcribe, synthesize, TTS_SAMPLE_RATE, SilenceBasedEndpointer
 
@@ -37,7 +37,7 @@ VOICE_SVC_URL = os.environ.get("VOICE_SVC_URL", "http://voice-id-svc:8002")
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "claude")
 
 r = redis.from_url(PROFILE_STORE_URL)
-registry = build_registry(TANY_BRIDGE_URL)
+registry = build_registry(TANY_BRIDGE_URL, r)
 engine = build_engine(LLM_PROVIDER)
 
 import realtime as realtime_mod
@@ -76,6 +76,19 @@ async def run_tool_calls(tool_calls: list[dict], user_id: str | None) -> list[di
             log.exception("skill %s failed", call["name"])
             results.append({"tool_use_id": call["id"], "content": f"שגיאה: {e}"})
     return results
+
+
+class TanyTokenRequest(BaseModel):
+    token: str
+
+
+@app.post("/profile/{user_id}/tany-token")
+async def set_tany_token(user_id: str, req: TanyTokenRequest):
+    """Called from /enroll — each person gets their own token from TANY
+    and enters it once here so skills.py's tany_command skill can use it
+    on their behalf."""
+    save_user_profile_fields(r, user_id, tany_token=req.token)
+    return {"ok": True}
 
 
 class TTSRequest(BaseModel):

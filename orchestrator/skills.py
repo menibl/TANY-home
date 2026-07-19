@@ -1,12 +1,20 @@
 """
 Skill registry. Each skill is just a name + which tool-schema to expose to
-the LLM + where to route the call when the LLM invokes it. Adding a new
-skill (smart-home, bank, email) later means adding one entry here and one
-bridge service — the orchestrator's core loop never changes.
+the LLM + where to route the call when the LLM invokes it.
+
+TANY exposes exactly one MCP tool (tany_command) that takes free-form text
+and routes it internally (shopping list, reminders, calendar, whatever TANY
+already knows how to do) — so there's a single generic skill here rather
+than one entry per TANY capability. Auth is per-person: each user has their
+own TANY token (obtained from TANY, entered once via /enroll), stored in
+their profile in profile-store.
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Awaitable
 import httpx
+import redis
+
+from personality import load_user_profile
 
 
 @dataclass
@@ -17,66 +25,44 @@ class Skill:
     handler: Callable[[dict, str | None], Awaitable[dict]]
 
 
-async def _tany_command(tany_bridge_url: str, user_id: str | None, intent: str, args: dict, raw_text: str = "") -> dict:
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.post(
-            f"{tany_bridge_url}/command",
-            json={"user_id": user_id, "intent": intent, "args": args, "raw_text": raw_text},
-        )
-        resp.raise_for_status()
-        return resp.json()
+def build_registry(tany_bridge_url: str, r: redis.Redis) -> dict[str, Skill]:
+    async def tany_command(args: dict, user_id: str | None) -> dict:
+        if not user_id:
+            return {"ok": False, "error": "לא מזוהה — צריך לדעת מי מדבר כדי להשתמש ב-TANY"}
+        profile = load_user_profile(r, user_id)
+        token = profile.get("tany_token")
+        if not token:
+            return {"ok": False, "error": f"אין עדיין טוקן TANY שמור עבור {user_id} — צריך להזין אותו במסך ההרשמה"}
 
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{tany_bridge_url}/command",
+                json={"text": args.get("text", ""), "tany_token": token},
+            )
+            resp.raise_for_status()
+            return resp.json()
 
-def build_registry(tany_bridge_url: str) -> dict[str, Skill]:
-    async def add_to_shopping_list(args: dict, user_id: str | None) -> dict:
-        return await _tany_command(tany_bridge_url, user_id, "shopping_list.add", args)
-
-    async def create_reminder(args: dict, user_id: str | None) -> dict:
-        return await _tany_command(tany_bridge_url, user_id, "reminders.create", args)
-
-    async def dictate_note(args: dict, user_id: str | None) -> dict:
-        return await _tany_command(tany_bridge_url, user_id, "notes.create", args)
-
-    registry = {
-        "add_to_shopping_list": Skill(
-            name="add_to_shopping_list",
-            description="מוסיף פריט לרשימת הקניות ב-TANY",
-            input_schema={
-                "type": "object",
-                "properties": {"item": {"type": "string"}},
-                "required": ["item"],
-            },
-            handler=add_to_shopping_list,
-        ),
-        "create_reminder": Skill(
-            name="create_reminder",
-            description="יוצר תזכורת ב-TANY",
+    return {
+        "tany_command": Skill(
+            name="tany_command",
+            description=(
+                "שולח כל בקשה או פקודת ניהול-בית (רשימת קניות, תזכורות, יומן, ועוד) "
+                "ל-TANY, שכבר יודע לטפל בזה. שלח את הבקשה כפי שהמשתמש ניסח אותה, בעברית."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {
-                    "text": {"type": "string"},
-                    "when": {"type": "string", "description": "e.g. 'מחר בבוקר', ISO date, etc."},
+                    "text": {"type": "string", "description": "הבקשה בשפה חופשית, כפי שהמשתמש אמר אותה"}
                 },
                 "required": ["text"],
             },
-            handler=create_reminder,
+            handler=tany_command,
         ),
-        "dictate_note": Skill(
-            name="dictate_note",
-            description="מקליט ושומר הערה חופשית ב-TANY, בלי לפרש אותה",
-            input_schema={
-                "type": "object",
-                "properties": {"text": {"type": "string"}},
-                "required": ["text"],
-            },
-            handler=dictate_note,
-        ),
-        # TODO next skills to add here, each with its own bridge service:
+        # TODO next skills to add here, each with its own bridge service
+        # (only if they don't already go through TANY's tany_command):
         #   smart_home.set_ac / smart_home.set_boiler / smart_home.play_music
         #   bank.get_balance (requires elevated auth scope + re-confirmation)
-        #   email.read_unread / email.send
     }
-    return registry
 
 
 def enabled_tools_for(registry: dict[str, Skill], skills_enabled: list[str]) -> list[dict]:

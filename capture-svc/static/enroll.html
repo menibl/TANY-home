@@ -126,6 +126,7 @@
 </main>
 
 <script>
+const ORCHESTRATOR_URL = "http://127.0.0.1:8004"; // matches run-windows.ps1's ORCHESTRATOR_URL
 let faceImageB64 = null;
 let recording = false;
 let voiceRecorded = false;
@@ -153,6 +154,19 @@ async function loadUsers() {
           <button class="danger" onclick="deleteUser('${u.user_id}')">מחק</button>
         </div>`;
       listEl.appendChild(row);
+
+      const tokenRow = document.createElement("div");
+      tokenRow.className = "user-row";
+      const inputId = `tanyToken_${u.user_id}`;
+      const statusId = `tanyTokenStatus_${u.user_id}`;
+      tokenRow.innerHTML = `
+        <div style="flex:1; display:flex; gap:8px; align-items:center;">
+          <input type="text" id="${inputId}" placeholder="טוקן TANY (tanyhome_...)"
+            style="flex:1; padding:6px 10px; border-radius:8px; border:1px solid var(--panel-border); background:var(--bg); color:var(--text); font-size:12px;">
+          <button onclick="saveTanyToken('${u.user_id}')">שמור טוקן</button>
+        </div>
+        <span id="${statusId}" class="note"></span>`;
+      listEl.appendChild(tokenRow);
     }
   } catch (e) {
     listEl.innerHTML = `<div class="err-badge">✗ לא ניתן לטעון משתמשים: ${e.message}</div>`;
@@ -174,6 +188,27 @@ function prefillFor(userId) {
   document.getElementById("voiceStatus").innerHTML = "";
   document.getElementById("submitStatus").innerHTML = "";
   window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+async function saveTanyToken(userId) {
+  const input = document.getElementById(`tanyToken_${userId}`);
+  const statusEl = document.getElementById(`tanyTokenStatus_${userId}`);
+  const token = input.value.trim();
+  if (!token) { statusEl.innerHTML = `<span class="err-badge">חסר טוקן</span>`; return; }
+  try {
+    const res = await fetch(`${ORCHESTRATOR_URL}/profile/${encodeURIComponent(userId)}/tany-token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    const data = await res.json();
+    statusEl.innerHTML = data.ok
+      ? `<span class="ok-badge">✓ נשמר</span>`
+      : `<span class="err-badge">✗ ${data.error || "שגיאה"}</span>`;
+    input.value = "";
+  } catch (e) {
+    statusEl.innerHTML = `<span class="err-badge">✗ ${e.message}</span>`;
+  }
 }
 
 async function deleteUser(userId) {

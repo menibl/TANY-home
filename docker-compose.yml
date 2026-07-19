@@ -111,7 +111,6 @@ services:
       - "8005:8005"
     environment:
       - TANY_MCP_URL=${TANY_MCP_URL}
-      - TANY_API_KEY=${TANY_API_KEY}
     restart: unless-stopped
     networks: [homebot]
 
