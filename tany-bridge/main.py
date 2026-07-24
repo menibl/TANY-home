@@ -29,6 +29,9 @@ class CommandRequest(BaseModel):
     tany_token: str
 
 
+QUOTA_ERROR_MARKERS = ("free_quota_exceeded", "premium_quota_exceeded")
+
+
 async def _call_tany(text: str, token: str) -> dict:
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
@@ -41,7 +44,23 @@ async def _call_tany(text: str, token: str) -> dict:
         )
         resp.raise_for_status()
         data = resp.json()
+
+        # MCP calls run through the same message-quota check as a normal
+        # WhatsApp message (5/day free, 50/month premium) — a call that
+        # fails this way comes back as a quota message, not an MCP-level
+        # error, so it needs its own detection instead of just erroring
+        # out generically (the model would otherwise report a vague
+        # "technical issue" instead of "you're out of messages today").
+        if "error" in data:
+            message = str(data["error"].get("message", ""))
+            if any(marker in message for marker in QUOTA_ERROR_MARKERS):
+                return {"ok": False, "error": "quota_exceeded", "message": "נגמרה המכסה היומית/חודשית של הודעות ב-TANY"}
+            return {"ok": False, "error": message or "TANY error"}
+
         content = data["result"]["content"][0]["text"]
+        if any(marker in content for marker in QUOTA_ERROR_MARKERS):
+            return {"ok": False, "error": "quota_exceeded", "message": "נגמרה המכסה היומית/חודשית של הודעות ב-TANY"}
+
         return {"ok": True, "result": content}
 
 

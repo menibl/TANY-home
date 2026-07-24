@@ -126,7 +126,8 @@
 </main>
 
 <script>
-const ORCHESTRATOR_URL = "http://127.0.0.1:8004"; // matches run-windows.ps1's ORCHESTRATOR_URL
+// same host as dashboard.html — see that file for why this isn't hardcoded
+const ORCHESTRATOR_URL = `http://${location.hostname}:8004`;
 let faceImageB64 = null;
 let recording = false;
 let voiceRecorded = false;

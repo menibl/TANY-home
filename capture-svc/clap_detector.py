@@ -16,8 +16,11 @@ longer than that is assumed to be talking or other noise and is ignored
 outright, not even counted as a "first clap".
 """
 import collections
+import logging
 import time
 import numpy as np
+
+log = logging.getLogger("capture-svc.clap")
 
 
 class DoubleClapDetector:
@@ -43,6 +46,8 @@ class DoubleClapDetector:
         self._first_clap_ts = None
         self._loud_streak = 0
         self._streak_start_ts = None
+        self._streak_peak_energy = 0.0
+        self._frame_ms = frame_ms
 
     def _frame_energy(self, frame: np.ndarray) -> float:
         # normalized RMS energy, 0..1 range assuming int16 PCM input
@@ -85,16 +90,29 @@ class DoubleClapDetector:
         if self._is_loud(energy):
             if self._loud_streak == 0:
                 self._streak_start_ts = now
+                self._streak_peak_energy = energy
+            else:
+                self._streak_peak_energy = max(self._streak_peak_energy, energy)
             self._loud_streak += 1
             return False  # decided on the falling edge, once we know how long this lasted
 
         if self._loud_streak > 0:
             streak_len = self._loud_streak
             streak_ts = self._streak_start_ts
+            peak_energy = self._streak_peak_energy
             self._loud_streak = 0
             self._streak_start_ts = None
+            self._streak_peak_energy = 0.0
 
             if streak_len <= self.max_clap_frames:
+                # logged regardless of whether this becomes a full
+                # double-clap trigger — real data on what's crossing the
+                # gate is the only way to tune threshold/max_clap_ms
+                # instead of guessing after the fact
+                log.info(
+                    "clap candidate: peak_energy=%.3f duration_ms=%d",
+                    peak_energy, streak_len * self._frame_ms,
+                )
                 return self._handle_clap_candidate(streak_ts)
             # sustained loud sound (talking, background noise, etc.) —
             # not a clap; fall through to noise-floor bookkeeping below

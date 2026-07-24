@@ -78,6 +78,7 @@ services:
     volumes:
       - profile-data:/data
     command: ["redis-server", "--appendonly", "yes"]
+    restart: unless-stopped
     networks: [homebot]
 
   # -- Stage 4+5: conversation state machine, LLM adapter, skill routing ----

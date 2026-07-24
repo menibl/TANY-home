@@ -218,7 +218,10 @@ function applyState(state, text) {
 // us to start (with who + how confidently they were identified) and
 // otherwise stays out of the way. See orchestrator/realtime.py for the
 // SDP-brokering + tool-call endpoints this talks to.
-const ORCHESTRATOR_URL = "http://127.0.0.1:8004"; // matches run-windows.ps1's ORCHESTRATOR_URL
+// same host the dashboard was loaded from (works whether that's
+// 127.0.0.1 on this machine or this machine's LAN IP from another
+// device) — orchestrator's Docker port is published on all interfaces
+const ORCHESTRATOR_URL = `http://${location.hostname}:8004`;
 const realtimeAudio = document.getElementById("realtimeAudio");
 let realtimePC = null;
 let realtimeDC = null;

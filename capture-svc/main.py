@@ -373,9 +373,13 @@ async def run_all():
         manual_trigger_event=manual_trigger_event,
         end_session_event=end_session_event,
     )
-    config = uvicorn.Config(web_ui.app, host="127.0.0.1", port=WEB_UI_PORT, log_level="warning")
+    # 0.0.0.0, not 127.0.0.1: lets other devices on the LAN reach the
+    # dashboard too (e.g. answering a triggered conversation from a
+    # phone). The clap/camera trigger itself still only ever uses this
+    # machine's own mic/RTSP feed — that part doesn't move.
+    config = uvicorn.Config(web_ui.app, host="0.0.0.0", port=WEB_UI_PORT, log_level="warning")
     server = uvicorn.Server(config)
-    log.info("dashboard: http://127.0.0.1:%d", WEB_UI_PORT)
+    log.info("dashboard: http://127.0.0.1:%d (also reachable on your LAN IP)", WEB_UI_PORT)
     await asyncio.gather(main_loop(), server.serve())
 
 
