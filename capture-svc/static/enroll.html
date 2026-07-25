@@ -126,8 +126,9 @@
 </main>
 
 <script>
-// same host as dashboard.html — see that file for why this isn't hardcoded
-const ORCHESTRATOR_URL = `http://${location.hostname}:8004`;
+// same host/protocol as dashboard.html — see that file for why this
+// isn't hardcoded (LAN + Tailscale HTTPS support)
+const ORCHESTRATOR_URL = `${location.protocol === "https:" ? "https:" : "http:"}//${location.hostname}:8004`;
 let faceImageB64 = null;
 let recording = false;
 let voiceRecorded = false;

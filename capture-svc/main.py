@@ -373,13 +373,35 @@ async def run_all():
         manual_trigger_event=manual_trigger_event,
         end_session_event=end_session_event,
     )
-    # 0.0.0.0, not 127.0.0.1: lets other devices on the LAN reach the
-    # dashboard too (e.g. answering a triggered conversation from a
-    # phone). The clap/camera trigger itself still only ever uses this
-    # machine's own mic/RTSP feed — that part doesn't move.
-    config = uvicorn.Config(web_ui.app, host="0.0.0.0", port=WEB_UI_PORT, log_level="warning")
+    # 0.0.0.0, not 127.0.0.1: lets other devices on the LAN/Tailscale
+    # reach the dashboard too (e.g. answering a triggered conversation
+    # from a phone). The clap/camera trigger itself still only ever uses
+    # this machine's own mic/RTSP feed — that part doesn't move.
+    #
+    # getUserMedia (the browser mic, needed for the realtime conversation)
+    # only works in a "secure context" — https://, or literally
+    # localhost/127.0.0.1. A bare LAN/Tailscale IP over http never
+    # qualifies, so from any other device the realtime path silently
+    # breaks unless we actually serve HTTPS. `tailscale cert` (see
+    # README) writes tailscale.crt/.key here when available — use them
+    # if present, otherwise fall back to plain HTTP (still fine for
+    # 127.0.0.1 access on this machine).
+    # shared with orchestrator's container via a bind mount (see
+    # docker-compose.yml) so both sides of every browser call are HTTPS
+    # under the same Tailscale hostname
+    certs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "certs")
+    cert_file = os.path.join(certs_dir, "tailscale.crt")
+    key_file = os.path.join(certs_dir, "tailscale.key")
+    if os.path.exists(cert_file) and os.path.exists(key_file):
+        config = uvicorn.Config(
+            web_ui.app, host="0.0.0.0", port=WEB_UI_PORT, log_level="warning",
+            ssl_certfile=cert_file, ssl_keyfile=key_file,
+        )
+        log.info("dashboard: https://127.0.0.1:%d (Tailscale cert found — also reachable via your Tailscale hostname)", WEB_UI_PORT)
+    else:
+        config = uvicorn.Config(web_ui.app, host="0.0.0.0", port=WEB_UI_PORT, log_level="warning")
+        log.info("dashboard: http://127.0.0.1:%d (no Tailscale cert found — realtime conversation won't work from other devices)", WEB_UI_PORT)
     server = uvicorn.Server(config)
-    log.info("dashboard: http://127.0.0.1:%d (also reachable on your LAN IP)", WEB_UI_PORT)
     await asyncio.gather(main_loop(), server.serve())
 
 

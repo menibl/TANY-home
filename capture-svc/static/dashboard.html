@@ -241,9 +241,13 @@ function applyState(state, text) {
 // otherwise stays out of the way. See orchestrator/realtime.py for the
 // SDP-brokering + tool-call endpoints this talks to.
 // same host the dashboard was loaded from (works whether that's
-// 127.0.0.1 on this machine or this machine's LAN IP from another
-// device) — orchestrator's Docker port is published on all interfaces
-const ORCHESTRATOR_URL = `http://${location.hostname}:8004`;
+// 127.0.0.1 on this machine, its LAN IP, or its Tailscale hostname) —
+// orchestrator's Docker port is published on all interfaces. https://
+// when this page itself is https:// (Tailscale cert present) — a
+// browser blocks http:// calls from an https:// page as mixed content,
+// and orchestrator serves HTTPS on the same port whenever the cert is
+// mounted (see docker-compose.yml + orchestrator/Dockerfile).
+const ORCHESTRATOR_URL = `${location.protocol === "https:" ? "https:" : "http:"}//${location.hostname}:8004`;
 const realtimeAudio = document.getElementById("realtimeAudio");
 let realtimePC = null;
 let realtimeDC = null;
@@ -598,7 +602,10 @@ endBtn.addEventListener("click", () => {
 });
 
 function connect() {
-  const ws = new WebSocket(`ws://${location.host}/ws/status`);
+  // wss:// when the page itself is https:// (Tailscale) — browsers block
+  // a plain ws:// connection from a secure page as mixed content
+  const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
+  const ws = new WebSocket(`${wsProtocol}//${location.host}/ws/status`);
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     applyState(msg.state, msg.text);

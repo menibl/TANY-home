@@ -7,3 +7,5 @@ venv/
 capture-svc/venv/
 *.log
 capture-svc/webcam_test_*.jpg
+certs/*.crt
+certs/*.key

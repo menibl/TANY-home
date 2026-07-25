@@ -87,6 +87,12 @@ services:
     container_name: homebot-orchestrator
     ports:
       - "8004:8004"
+    volumes:
+      # directory-level mount (not per-file) so this stays safe to start
+      # even when no cert has been generated yet — an empty directory
+      # mounts fine, a bind-mount of a missing single file does not.
+      # See capture-svc's `tailscale cert` step for how these get created.
+      - ./certs:/certs:ro
     environment:
       - PROFILE_STORE_URL=redis://profile-store:6379
       - TANY_BRIDGE_URL=http://tany-bridge:8005
