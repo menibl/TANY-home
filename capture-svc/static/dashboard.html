@@ -44,6 +44,12 @@
     color: var(--text-dim); text-decoration: none; margin-inline-start: 20px; font-size: 14px;
   }
   nav a:hover, nav a.active { color: var(--blue); }
+  .fullscreen-btn {
+    background: transparent; border: 1px solid var(--panel-border); color: var(--text-dim);
+    border-radius: 8px; padding: 6px 10px; font-size: 16px; cursor: pointer;
+    margin-inline-start: 20px; line-height: 1;
+  }
+  .fullscreen-btn:hover { color: var(--blue); border-color: var(--blue); }
 
   main { flex: 1; display: flex; align-items: center; justify-content: center; padding: 40px 20px; gap: 60px; flex-wrap: wrap; }
 
@@ -130,6 +136,7 @@
   <nav>
     <a href="/" class="active">בית</a>
     <a href="/enroll">משתמש חדש</a>
+    <button class="fullscreen-btn" id="fullscreenBtn" title="מסך מלא">⛶</button>
   </nav>
 </header>
 
@@ -181,6 +188,21 @@ for (const [key, title, sub] of STATES) {
 
 const orb = document.getElementById("orb");
 const statusText = document.getElementById("statusText");
+
+// kiosk-style use (wall tablet, car browser) — hides the browser's own
+// chrome (address bar, tabs) so only the app is visible
+const fullscreenBtn = document.getElementById("fullscreenBtn");
+fullscreenBtn.addEventListener("click", () => {
+  if (document.fullscreenElement) {
+    document.exitFullscreen();
+  } else {
+    (document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen)
+      .call(document.documentElement);
+  }
+});
+document.addEventListener("fullscreenchange", () => {
+  fullscreenBtn.textContent = document.fullscreenElement ? "⤢" : "⛶";
+});
 
 const TEXT_TEMPLATES = {
   listening: "מאזין למחיאת כף...",
