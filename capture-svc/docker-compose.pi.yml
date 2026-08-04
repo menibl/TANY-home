@@ -15,6 +15,14 @@ services:
     devices:
       - /dev/snd:/dev/snd
       # - /dev/gpiomem:/dev/gpiomem   # uncomment for step 3 (physical button)
+    volumes:
+      # BlueALSA is a userspace daemon talking over D-Bus, not a plain
+      # ALSA device node — /dev/snd alone isn't enough for the
+      # container's ALSA "bluealsa" plugin to reach it. Also needs the
+      # host's ~/.asoundrc (default PCM routed through bluealsa) since
+      # a container has no home directory of its own to find one in.
+      - /var/run/dbus:/var/run/dbus
+      - ${HOME}/.asoundrc:/root/.asoundrc:ro
     environment:
       - RTSP_URL=${RTSP_URL}
       - VISION_SVC_URL=${VISION_SVC_URL}
