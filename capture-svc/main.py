@@ -2,7 +2,6 @@ import asyncio
 import logging
 import os
 import ssl
-import threading
 
 import numpy as np
 import requests
@@ -231,44 +230,51 @@ async def open_conversation_session(user_id: str | None, certain: bool):
         ssl_context.verify_mode = ssl.CERT_NONE
     async with websockets.connect(uri, max_size=None, ping_interval=None, ssl=ssl_context) as ws:
         mic_queue: asyncio.Queue[bytes] = asyncio.Queue()
-        speaker_active = threading.Event()
+        # True half-duplex, not just software muting: some Bluetooth
+        # audio hardware (e.g. a cheap HFP speaker/mic combo) can't
+        # reliably run capture and playback at once even over the same
+        # SCO link — muting by dropping frames still left the underlying
+        # capture stream physically open and fighting the playback
+        # stream for the link. Physically stop/close the mic stream
+        # while playing a reply, then reopen it once done.
+        mic_state = {"stream": None}
 
         def mic_callback(frame: np.ndarray):
             # runs on PortAudio's own thread, not the event loop thread —
             # asyncio.Queue isn't thread-safe, so hop back via call_soon_threadsafe.
-            # Drop frames while TTS is playing — without this the mic picks
-            # up the bot's own reply through the speaker and sends it back
-            # as if it were the user talking, triggering an echo of Claude
-            # calls answering itself.
-            if speaker_active.is_set():
-                return
             loop.call_soon_threadsafe(mic_queue.put_nowait, frame.tobytes())
 
-        log.info("DEBUG: ws connected, opening mic stream")
-        stream = open_mic_stream(mic_callback)
-        log.info("DEBUG: mic stream object created")
+        def start_mic():
+            if mic_state["stream"] is None:
+                s = open_mic_stream(mic_callback)
+                s.start()
+                mic_state["stream"] = s
+
+        def stop_mic():
+            s = mic_state["stream"]
+            if s is not None:
+                mic_state["stream"] = None
+                s.stop()
+                s.close()
+
+        start_mic()
 
         async def send_mic_audio():
-            log.info("DEBUG: send_mic_audio task starting, entering stream context")
-            with stream:
-                log.info("DEBUG: mic stream opened, entering send loop")
-                while True:
-                    chunk = await mic_queue.get()
-                    await ws.send(chunk)
+            while True:
+                chunk = await mic_queue.get()
+                await ws.send(chunk)
 
         async def receive_events():
-            log.info("DEBUG: receive_events task starting")
             async for message in ws:
-                log.info("DEBUG: received message, type=%s len=%s", type(message).__name__, len(message) if hasattr(message, '__len__') else '?')
                 if isinstance(message, (bytes, bytearray)):
                     # full-reply TTS audio from orchestrator (see /session
                     # in orchestrator/main.py) -> play it through the speaker
                     set_status("speaking")
-                    speaker_active.set()
+                    await asyncio.to_thread(stop_mic)
                     try:
                         await asyncio.to_thread(play_pcm16, bytes(message), TTS_SAMPLE_RATE)
                     finally:
-                        speaker_active.clear()
+                        await asyncio.to_thread(start_mic)
                     continue
                 import json
                 event = json.loads(message)
@@ -307,6 +313,7 @@ async def open_conversation_session(user_id: str | None, certain: bool):
                 await t
             except (asyncio.CancelledError, Exception):
                 pass
+        stop_mic()
         # a real failure in the mic/events pump (not our own cancellation)
         # should still surface to main_loop's outer try/except and get logged
         for t in done:
