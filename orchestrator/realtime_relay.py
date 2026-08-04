@@ -157,6 +157,7 @@ async def run(client_ws: WebSocket, *, user_id, certain, system_prompt, tools, r
         },
         max_size=None,
     ) as oai_ws:
+        log.info("DEBUG: connected to OpenAI realtime WS")
         await oai_ws.send(json.dumps({
             "type": "session.update",
             "session": {
@@ -170,6 +171,7 @@ async def run(client_ws: WebSocket, *, user_id, certain, system_prompt, tools, r
             },
         }))
         await oai_ws.send(json.dumps({"type": "response.create"}))
+        log.info("DEBUG: sent session.update + response.create")
 
         # Only used to segment utterances for the voice-id side-check
         # below, never for transcription/reply generation — OpenAI does
@@ -178,9 +180,14 @@ async def run(client_ws: WebSocket, *, user_id, certain, system_prompt, tools, r
         state = {"user_id": user_id, "certain": certain}
 
         async def pump_mic_up():
+            log.info("DEBUG: pump_mic_up starting")
+            frame_count = 0
             try:
                 while True:
                     frame = await client_ws.receive_bytes()
+                    frame_count += 1
+                    if frame_count % 100 == 0:
+                        log.info("DEBUG: pump_mic_up forwarded %d frames", frame_count)
                     if not state["certain"]:
                         utterance = endpointer.push(frame)
                         if utterance is not None:
@@ -215,6 +222,7 @@ async def run(client_ws: WebSocket, *, user_id, certain, system_prompt, tools, r
             async for raw in oai_ws:
                 event = json.loads(raw)
                 etype = event.get("type")
+                log.info("DEBUG: OpenAI event: %s", etype)
 
                 if etype in ("response.audio.delta", "response.output_audio.delta"):
                     audio_buffer.extend(base64.b64decode(event["delta"]))
