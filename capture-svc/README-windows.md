@@ -28,6 +28,7 @@ of the Docker network hostnames used when everything is containerized.
 
 ## Moving to a real Linux host / Raspberry Pi later
 
-Uncomment the `capture-svc` block in `docker-compose.yml`, remove the
-`localhost` overrides here, and run it in Docker like the rest —
-`/dev/snd` passthrough works normally there.
+See [README-pi.md](README-pi.md) — capture-svc runs in Docker there
+(`/dev/snd` passthrough works normally on real Linux) via its own
+`docker-compose.pi.yml`, pointed at this PC's LAN IP for the other 5
+services, which stay here.

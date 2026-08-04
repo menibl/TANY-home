@@ -21,30 +21,12 @@ services:
   # NOT containerized on Windows: Docker Desktop (WSL2) does not pass
   # /dev/snd (ALSA) through to Linux containers, so this service cannot
   # reach the host microphone from inside Docker on this machine. Run it
-  # natively instead — see capture-svc/README-windows.md. Left here,
-  # commented out, for when this moves to a real Linux host/RPi where
-  # /dev/snd passthrough works.
-  # capture-svc:
-  #   build: ./capture-svc
-  #   container_name: homebot-capture
-  #   devices:
-  #     - /dev/snd:/dev/snd          # microphone + speaker access (pair BT
-  #                                    # mic/speaker at the OS level first,
-  #                                    # e.g. via BlueALSA, then this just
-  #                                    # sees it as a normal ALSA device)
-  #     - /dev/gpiomem:/dev/gpiomem  # only needed if BUTTON_GPIO_PIN is set below
-  #   environment:
-  #     - RTSP_URL=${RTSP_URL}
-  #     - VISION_SVC_URL=http://vision-id-svc:8001
-  #     - ORCHESTRATOR_URL=http://orchestrator:8004
-  #     - CLAP_WINDOW_MS=600          # max time between the two claps
-  #     - CLAP_ENERGY_THRESHOLD=0.35  # tune to your room's noise floor
-  #     - BUTTON_GPIO_PIN=${BUTTON_GPIO_PIN:-}  # optional physical trigger button
-  #   restart: unless-stopped
-  #   deploy:
-  #     resources:
-  #       limits: { cpus: "0.5", memory: 256m }   # this must stay tiny
-  #   networks: [homebot]
+  # natively instead — see capture-svc/README-windows.md.
+  #
+  # Moved to a Raspberry Pi (real Linux, /dev/snd passthrough works):
+  # capture-svc runs there via its own capture-svc/docker-compose.pi.yml,
+  # not this file — the other 5 services below stay here on the PC and
+  # the Pi reaches them over the LAN. See capture-svc/README-pi.md.
 
   # -- Stage 2: face + soft-biometrics identification ------------------------
   vision-id-svc:

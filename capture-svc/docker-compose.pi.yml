@@ -1,0 +1,30 @@
+# Runs ONLY capture-svc, on the Raspberry Pi. Every other service
+# (orchestrator, vision-id-svc, voice-id-svc, tany-bridge, profile-store)
+# stays on the PC's own docker-compose.yml — this file intentionally does
+# not duplicate them. See README-pi.md for the full setup.
+#
+# network_mode: host (not port publishing) — simplest way to let the
+# container see the Pi's paired Bluetooth ALSA device and to serve the
+# dashboard on the Pi's real LAN IP without a separate mapping step.
+# Safe here because nothing else runs on this Pi.
+services:
+  capture-svc:
+    build: .
+    container_name: homebot-capture
+    network_mode: host
+    devices:
+      - /dev/snd:/dev/snd
+      # - /dev/gpiomem:/dev/gpiomem   # uncomment for step 3 (physical button)
+    environment:
+      - RTSP_URL=${RTSP_URL}
+      - VISION_SVC_URL=${VISION_SVC_URL}
+      - VOICE_SVC_URL=${VOICE_SVC_URL}
+      - ORCHESTRATOR_URL=${ORCHESTRATOR_URL}
+      - WEB_UI_PORT=${WEB_UI_PORT:-8010}
+      - CLAP_ENERGY_THRESHOLD=${CLAP_ENERGY_THRESHOLD:-0.08}
+      - CLAP_WINDOW_MS=${CLAP_WINDOW_MS:-900}
+      - CLAP_REFRACTORY_MS=${CLAP_REFRACTORY_MS:-100}
+      - CLAP_MAX_MS=${CLAP_MAX_MS:-60}
+      - USE_REALTIME=0
+      # - BUTTON_GPIO_PIN=17          # uncomment for step 3
+    restart: unless-stopped
