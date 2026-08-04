@@ -174,9 +174,12 @@ def play_pcm16(audio_bytes: bytes, sample_rate: int):
         return
     samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float64)
     peak = np.abs(samples).max()
+    duration_s = len(samples) / sample_rate
+    log.info("DEBUG: play_pcm16 samples=%d peak=%.0f duration=%.2fs rate=%d", len(samples), peak, duration_s, sample_rate)
     if peak > 0:
         samples = samples / peak * 30000
     sd.play(samples.astype(np.int16), samplerate=sample_rate, blocking=True)
+    log.info("DEBUG: sd.play() returned")
 
 
 async def say(text: str):
@@ -269,12 +272,20 @@ async def open_conversation_session(user_id: str | None, certain: bool):
                 if isinstance(message, (bytes, bytearray)):
                     # full-reply TTS audio from orchestrator (see /session
                     # in orchestrator/main.py) -> play it through the speaker
+                    log.info("DEBUG: audio message received, len=%d bytes", len(message))
                     set_status("speaking")
+                    log.info("DEBUG: stopping mic")
                     await asyncio.to_thread(stop_mic)
+                    log.info("DEBUG: mic stopped, calling play_pcm16")
                     try:
                         await asyncio.to_thread(play_pcm16, bytes(message), TTS_SAMPLE_RATE)
+                        log.info("DEBUG: play_pcm16 returned normally")
+                    except Exception:
+                        log.exception("DEBUG: play_pcm16 raised")
                     finally:
+                        log.info("DEBUG: restarting mic")
                         await asyncio.to_thread(start_mic)
+                        log.info("DEBUG: mic restarted")
                     continue
                 import json
                 event = json.loads(message)
