@@ -28,13 +28,18 @@ services:
   #   build: ./capture-svc
   #   container_name: homebot-capture
   #   devices:
-  #     - /dev/snd:/dev/snd          # microphone + speaker access
+  #     - /dev/snd:/dev/snd          # microphone + speaker access (pair BT
+  #                                    # mic/speaker at the OS level first,
+  #                                    # e.g. via BlueALSA, then this just
+  #                                    # sees it as a normal ALSA device)
+  #     - /dev/gpiomem:/dev/gpiomem  # only needed if BUTTON_GPIO_PIN is set below
   #   environment:
   #     - RTSP_URL=${RTSP_URL}
   #     - VISION_SVC_URL=http://vision-id-svc:8001
   #     - ORCHESTRATOR_URL=http://orchestrator:8004
   #     - CLAP_WINDOW_MS=600          # max time between the two claps
   #     - CLAP_ENERGY_THRESHOLD=0.35  # tune to your room's noise floor
+  #     - BUTTON_GPIO_PIN=${BUTTON_GPIO_PIN:-}  # optional physical trigger button
   #   restart: unless-stopped
   #   deploy:
   #     resources:
@@ -96,7 +101,7 @@ services:
     environment:
       - PROFILE_STORE_URL=redis://profile-store:6379
       - TANY_BRIDGE_URL=http://tany-bridge:8005
-      - LLM_PROVIDER=claude            # claude | openai | gemini
+      - LLM_PROVIDER=${LLM_PROVIDER:-claude}   # claude | openai | gemini -- openai bypasses STT/TTS entirely, see orchestrator/realtime_relay.py
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
@@ -104,6 +109,8 @@ services:
       - ENDPOINT_SILENCE_MS=${ENDPOINT_SILENCE_MS:-700}
       - TTS_VOICE=${TTS_VOICE:-alloy}
       - TTS_MODEL=${TTS_MODEL:-tts-1}
+      - REALTIME_MODEL=${REALTIME_MODEL:-gpt-realtime}
+      - REALTIME_VOICE=${REALTIME_VOICE:-marin}
     restart: unless-stopped
     deploy:
       resources:

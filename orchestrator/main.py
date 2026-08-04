@@ -10,7 +10,8 @@ from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from llm_adapters import build_engine
+import realtime_relay
+from llm_adapters import build_engine, OpenAIRealtimeEngine
 from personality import load_base_personality, load_user_profile, build_system_prompt, save_user_profile_fields
 from skills import build_registry, enabled_tools_for
 from speech_io import transcribe, synthesize, TTS_SAMPLE_RATE, SilenceBasedEndpointer
@@ -118,6 +119,22 @@ async def session(ws: WebSocket):
     user_profile = load_user_profile(r, user_id)
     system_prompt = build_system_prompt(base_personality, user_profile, user_id)
     tools = enabled_tools_for(registry, user_profile["skills_enabled"])
+
+    if isinstance(engine, OpenAIRealtimeEngine):
+        # LLM_PROVIDER=openai: native speech-to-speech, bypass STT/TTS
+        # entirely and relay raw audio to OpenAI's own Realtime session
+        # instead of running the cascaded loop below. capture-svc sees
+        # the exact same WS contract either way.
+        log.info("session started (openai realtime relay): user_id=%s certain=%s", user_id, certain)
+        try:
+            await realtime_relay.run(
+                ws, user_id=user_id, certain=certain,
+                system_prompt=system_prompt, tools=tools, registry=registry,
+            )
+        except WebSocketDisconnect:
+            pass
+        log.info("session ended (openai realtime relay): user_id=%s", user_id)
+        return
 
     endpointer = SilenceBasedEndpointer()
     history: list[dict] = []

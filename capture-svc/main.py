@@ -19,6 +19,10 @@ VISION_SVC_URL = os.environ.get("VISION_SVC_URL", "http://vision-id-svc:8001")
 VOICE_SVC_URL = os.environ.get("VOICE_SVC_URL", "http://voice-id-svc:8002")
 ORCHESTRATOR_URL = os.environ.get("ORCHESTRATOR_URL", "http://orchestrator:8004")
 WEB_UI_PORT = int(os.environ.get("WEB_UI_PORT", "8010"))
+# Optional physical trigger button (e.g. on a Pi with GPIO), alongside the
+# clap detector. Unset on any machine without one (PC dev box, this
+# machine, ...) -> the GPIO listener below is simply never started.
+BUTTON_GPIO_PIN = os.environ.get("BUTTON_GPIO_PIN")
 # When on: the live conversation is native OpenAI Realtime speech-to-
 # speech, browser<->OpenAI directly over WebRTC (see orchestrator/
 # realtime.py and static/dashboard.html) instead of the Claude cascaded
@@ -58,6 +62,11 @@ mic_resume = asyncio.Event()
 # RTSP camera (the whole point of a clap trigger is not being at the
 # computer; a click means you obviously are).
 manual_trigger_event = asyncio.Event()
+
+# Set by a physical GPIO button press (see BUTTON_GPIO_PIN). Treated
+# exactly like a real double-clap (RTSP snapshot, not webcam) since the
+# button lives wherever the mic/camera do, same as clapping.
+button_trigger_event = asyncio.Event()
 
 # Set by the dashboard's "סיים שיחה" button to end the active
 # conversation on demand instead of waiting for the orchestrator to.
@@ -117,6 +126,23 @@ def open_mic_stream(frame_callback):
         device=_MIC_DEVICE,
         callback=_cb,
     )
+
+
+def start_button_listener(loop: asyncio.AbstractEventLoop):
+    """No-op unless BUTTON_GPIO_PIN is set. gpiozero itself imports fine
+    on any platform; it's instantiating Button() without a real GPIO chip
+    behind it that fails, so that only happens when a pin was explicitly
+    configured -- a PC/dev box that never sets BUTTON_GPIO_PIN never
+    touches gpiozero at all."""
+    if not BUTTON_GPIO_PIN:
+        return
+    try:
+        from gpiozero import Button
+        button = Button(int(BUTTON_GPIO_PIN), bounce_time=0.2)
+        button.when_pressed = lambda: loop.call_soon_threadsafe(button_trigger_event.set)
+        log.info("physical button listener active on GPIO%s", BUTTON_GPIO_PIN)
+    except Exception:
+        log.exception("BUTTON_GPIO_PIN=%s set but button init failed -- physical button disabled", BUTTON_GPIO_PIN)
 
 
 def identify_from_snapshot(source: str = "rtsp") -> dict:
@@ -265,6 +291,7 @@ async def main_loop():
     log.info("capture-svc up. listening for double-clap...")
     loop = asyncio.get_running_loop()
     trigger_event = asyncio.Event()
+    start_button_listener(loop)
 
     def audio_callback(frame: np.ndarray):
         # runs on PortAudio's own thread, not the event loop thread —
@@ -280,9 +307,10 @@ async def main_loop():
         with open_mic_stream(audio_callback):
             wait_clap = asyncio.create_task(trigger_event.wait())
             wait_manual = asyncio.create_task(manual_trigger_event.wait())
+            wait_button = asyncio.create_task(button_trigger_event.wait())
             wait_yield = asyncio.create_task(mic_yield_requested.wait())
             done, pending = await asyncio.wait(
-                {wait_clap, wait_manual, wait_yield}, return_when=asyncio.FIRST_COMPLETED
+                {wait_clap, wait_manual, wait_button, wait_yield}, return_when=asyncio.FIRST_COMPLETED
             )
             for t in pending:
                 t.cancel()
@@ -299,6 +327,9 @@ async def main_loop():
         if wait_manual in done:
             manual_trigger_event.clear()
             snapshot_source = "webcam"
+        elif wait_button in done:
+            button_trigger_event.clear()
+            snapshot_source = "rtsp"
         else:
             trigger_event.clear()
             snapshot_source = "rtsp"
