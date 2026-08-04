@@ -10,6 +10,24 @@ camera already configured in `.env`, not anything attached to the Pi.
 Replace `<PC_LAN_IP>` below with this PC's LAN IP: **192.168.68.58**
 (confirm with `ipconfig` on the PC if it's changed since).
 
+## 0. Before you start — what you need (Pi 3 B+)
+
+- The Pi 3 B+ board itself, and the microSD card + USB card reader you
+  already have.
+- **A micro-USB power supply, 5V/2.5A** — the Pi 3 B+ uses micro-USB,
+  *not* the USB-C connector Pi 4/5 use. A phone charger that isn't
+  rated for at least 2.5A will cause random reboots/instability under
+  load — worth checking the label, don't guess.
+- Either a WiFi network to join, or an Ethernet cable to your router —
+  both work, pick one; instructions below cover both.
+- Bluetooth is **built into** the Pi 3 B+ (no USB dongle needed) — that's
+  what the BT speaker/mic will pair over.
+- **Only 1GB RAM** on this model — not a blocker for capture-svc (it's
+  a light service; the heavy stuff — Whisper, face/voice matching —
+  stays on the PC), but Docker image builds can be slow, and the
+  default swap file is small enough that a build could fail outright.
+  Step 2 below includes bumping it before you build anything.
+
 ## Recommended: no browser on the Pi at all
 
 The Pi is headless, so the WebRTC/browser conversation path
@@ -35,22 +53,45 @@ This only affects sessions that go through the old `/session` websocket
 
 ## 1. Flash the OS (headless — no monitor needed)
 
-1. Install **Raspberry Pi Imager** on this PC.
-2. Choose **Raspberry Pi OS Lite (64-bit)** — no desktop needed.
-3. Before writing, click the gear icon (advanced options) and set:
-   - Enable SSH (use password or your public key)
-   - Set username/password
-   - Configure your WiFi SSID/password (or skip if using Ethernet)
-   - Set hostname, e.g. `homebot-pi`
-4. Write to the SD card, boot the Pi, wait ~1 min, then from this PC:
+1. Download **Raspberry Pi Imager** from
+   https://www.raspberrypi.com/software/ (the Windows `.exe`) and
+   install it on this PC. Plug the microSD card into the USB reader.
+2. Open Raspberry Pi Imager:
+   - **Choose Device** → Raspberry Pi 3
+   - **Choose OS** → "Raspberry Pi OS (other)" → **Raspberry Pi OS
+     Lite (64-bit)** (no desktop needed — this is a headless box)
+   - **Choose Storage** → your microSD card (double-check it's the
+     right drive, this erases it)
+3. Click the gear icon (⚙, bottom right — "Edit Settings") before
+   writing:
+   - **General tab**: set hostname to `homebot-pi`; tick "Enable SSH",
+     choose password auth, set a username/password you'll remember;
+     if using WiFi, tick "Configure wireless LAN" and enter your
+     SSID/password (skip this if using an Ethernet cable instead)
+   - **Services tab**: confirm SSH is enabled
+   - Save, then click **Write** and confirm. Takes a few minutes.
+4. Move the microSD card into the Pi, connect the Ethernet cable (if
+   using one), then connect power last. Wait ~2 minutes for first boot
+   (it reboots once automatically partway through).
+5. From this PC:
    ```bash
-   ssh <username>@homebot-pi.local
+   ssh homebot@homebot-pi.local
    ```
+   (use whatever username you set above). If `.local` doesn't resolve,
+   find its IP from your router's connected-devices list instead and
+   `ssh homebot@<that IP>`.
 
-## 2. Update + install Docker
+## 2. Update, bump swap, install Docker
 
+Only 1GB RAM on this board — the default 100MB swap file is too small
+for a Docker build (installing numpy/opencv can need more headroom
+than that). Bump it before building anything:
 ```bash
 sudo apt update && sudo apt full-upgrade -y
+sudo dphys-swapfile swapoff
+sudo sed -i 's/CONF_SWAPSIZE=.*/CONF_SWAPSIZE=1024/' /etc/dphys-swapfile
+sudo dphys-swapfile setup
+sudo dphys-swapfile swapon
 curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker $USER
 sudo reboot
