@@ -244,16 +244,22 @@ async def open_conversation_session(user_id: str | None, certain: bool):
                 return
             loop.call_soon_threadsafe(mic_queue.put_nowait, frame.tobytes())
 
+        log.info("DEBUG: ws connected, opening mic stream")
         stream = open_mic_stream(mic_callback)
+        log.info("DEBUG: mic stream object created")
 
         async def send_mic_audio():
+            log.info("DEBUG: send_mic_audio task starting, entering stream context")
             with stream:
+                log.info("DEBUG: mic stream opened, entering send loop")
                 while True:
                     chunk = await mic_queue.get()
                     await ws.send(chunk)
 
         async def receive_events():
+            log.info("DEBUG: receive_events task starting")
             async for message in ws:
+                log.info("DEBUG: received message, type=%s len=%s", type(message).__name__, len(message) if hasattr(message, '__len__') else '?')
                 if isinstance(message, (bytes, bytearray)):
                     # full-reply TTS audio from orchestrator (see /session
                     # in orchestrator/main.py) -> play it through the speaker
