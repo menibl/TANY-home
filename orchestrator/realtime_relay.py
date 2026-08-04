@@ -201,14 +201,33 @@ async def run(client_ws: WebSocket, *, user_id, certain, system_prompt, tools, r
                 pass
 
         async def pump_events_down():
+            # capture-svc's play_pcm16 opens a fresh output stream per
+            # binary message it receives (fine for the Claude path, which
+            # sends one message per complete reply) — forwarding each
+            # small OpenAI audio delta (dozens per turn) as its own
+            # message meant dozens of open/close cycles per reply, which
+            # on a Bluetooth SCO link (real per-open latency) is what
+            # made playback sound fragmented/choppy instead of like
+            # continuous speech. Buffer deltas and flush one combined
+            # blob per output item instead.
+            audio_buffer = bytearray()
+
             async for raw in oai_ws:
                 event = json.loads(raw)
                 etype = event.get("type")
 
                 if etype in ("response.audio.delta", "response.output_audio.delta"):
-                    await client_ws.send_bytes(base64.b64decode(event["delta"]))
+                    audio_buffer.extend(base64.b64decode(event["delta"]))
+
+                elif etype in ("response.audio.done", "response.output_audio.done"):
+                    if audio_buffer:
+                        await client_ws.send_bytes(bytes(audio_buffer))
+                        audio_buffer.clear()
 
                 elif etype == "response.done":
+                    if audio_buffer:
+                        await client_ws.send_bytes(bytes(audio_buffer))
+                        audio_buffer.clear()
                     await client_ws.send_text(json.dumps({"type": "end_of_turn"}))
                     output = (event.get("response") or {}).get("output", [])
                     for item in output:
