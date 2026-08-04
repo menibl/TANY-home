@@ -1,12 +1,17 @@
 import asyncio
 import logging
 import os
+import ssl
 import threading
 
 import numpy as np
 import requests
 import sounddevice as sd
+import urllib3
 import websockets
+
+# expected/intentional (see say()'s verify=False) — silence the noise
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from clap_detector import DoubleClapDetector
 from rtsp_snapshot import grab_snapshots, grab_webcam_snapshots
@@ -182,8 +187,16 @@ async def say(text: str):
     logic above it — the engine itself lives in orchestrator/speech_io.py."""
     log.info("TTS -> %r", text)
     try:
+        # orchestrator serves HTTPS-only whenever a Tailscale cert is
+        # mounted (see docker-compose.yml) — that cert is issued for the
+        # PC's Tailscale hostname, not whatever address ORCHESTRATOR_URL
+        # actually points at here (a LAN IP, from e.g. the Pi), so
+        # hostname verification would always fail even though this is
+        # our own known server. Machine-to-machine on a home LAN, not a
+        # browser — skipping verification is the standard tradeoff here.
         resp = await asyncio.to_thread(
-            requests.post, f"{ORCHESTRATOR_URL}/tts", json={"text": text}, timeout=15
+            requests.post, f"{ORCHESTRATOR_URL}/tts", json={"text": text}, timeout=15,
+            verify=False,
         )
         resp.raise_for_status()
         rate = int(resp.headers.get("X-Sample-Rate", TTS_SAMPLE_RATE))
@@ -208,7 +221,15 @@ async def open_conversation_session(user_id: str | None, certain: bool):
     # slow turn, which was killing the connection right as the reply
     # became ready. This is a local connection to a container on the
     # same machine — dead-connection detection isn't needed here.
-    async with websockets.connect(uri, max_size=None, ping_interval=None) as ws:
+    #
+    # same cert-hostname mismatch as say()'s verify=False above — wss://
+    # here needs an SSL context that skips hostname/cert verification.
+    ssl_context = None
+    if uri.startswith("wss://"):
+        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+    async with websockets.connect(uri, max_size=None, ping_interval=None, ssl=ssl_context) as ws:
         mic_queue: asyncio.Queue[bytes] = asyncio.Queue()
         speaker_active = threading.Event()
 
