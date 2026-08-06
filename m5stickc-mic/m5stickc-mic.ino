@@ -16,7 +16,7 @@
 #include <WiFiUdp.h>
 #include "driver/i2s.h"
 
-const char* WIFI_SSID = "meni";
+const char* WIFI_SSID = "Meni";
 const char* WIFI_PASSWORD = "0543265994";
 
 // Update this if the Pi's IP changes (it has before, twice, this session —
@@ -44,6 +44,13 @@ void setupWiFi() {
     delay(300);
     Serial.print(".");
   }
+  // ESP32's default WiFi power-save (modem sleep) adds real latency to
+  // every send — measured on the Pi side: packets were arriving every
+  // ~65ms instead of the ~32ms of audio each one actually represents,
+  // meaning audio was being generated/sent slower than real-time no
+  // matter how much buffering the receiving side had. This is the
+  // single biggest fix for that.
+  WiFi.setSleep(false);
   Serial.println();
   Serial.print("Connected, IP: ");
   Serial.println(WiFi.localIP());
