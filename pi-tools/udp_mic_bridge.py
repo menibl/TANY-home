@@ -21,9 +21,18 @@ def main():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("0.0.0.0", UDP_PORT))
 
+    # -B/-F: a much bigger buffer than aplay's default — UDP packets from
+    # the M5StickC arrive in irregular bursts (network jitter, not a
+    # steady clocked stream the way a real audio device would produce
+    # one), and the default buffer was too small to absorb that,
+    # causing constant underruns (confirmed via aplay's own "underrun!!!"
+    # log output — isolated loopback test without UDP in the picture at
+    # all played back a clean signal, so the loopback device itself was
+    # never the problem).
     proc = subprocess.Popen(
         ["aplay", "-D", "hw:Loopback,0,0", "-f", "S16_LE",
-         "-r", str(SAMPLE_RATE), "-c", "1", "-t", "raw", "-"],
+         "-r", str(SAMPLE_RATE), "-c", "1", "-t", "raw",
+         "-B", "500000", "-F", "50000", "-"],
         stdin=subprocess.PIPE,
     )
 
