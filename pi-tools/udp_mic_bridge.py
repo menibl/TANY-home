@@ -29,13 +29,21 @@ def main():
 
     print(f"Listening for M5StickC mic audio on UDP :{UDP_PORT}, "
           f"piping into ALSA loopback...", flush=True)
+    count = 0
     try:
         while True:
             data, addr = sock.recvfrom(4096)
+            count += 1
+            if count % 50 == 0:
+                print(f"received {count} packets so far, last from {addr}, "
+                      f"len={len(data)}, aplay alive={proc.poll() is None}", flush=True)
             proc.stdin.write(data)
             proc.stdin.flush()
     except (KeyboardInterrupt, BrokenPipeError):
         pass
+    except Exception:
+        import traceback
+        traceback.print_exc()
     finally:
         proc.terminate()
 
