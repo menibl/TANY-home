@@ -41,5 +41,6 @@ services:
       # names actually defined in ~/.asoundrc.
       - MIC_DEVICE_NAME=${MIC_DEVICE_NAME:-m5mic_plug}
       - SPEAKER_DEVICE_NAME=${SPEAKER_DEVICE_NAME:-jbl_a2dp}
+      - SPEAKER_SAMPLE_RATE=${SPEAKER_SAMPLE_RATE:-48000}
       # - BUTTON_GPIO_PIN=17          # uncomment for step 3
     restart: unless-stopped

@@ -42,6 +42,10 @@ SAMPLE_RATE = 16000
 # setups where that resolution works correctly).
 MIC_DEVICE_NAME = os.environ.get("MIC_DEVICE_NAME")
 SPEAKER_DEVICE_NAME = os.environ.get("SPEAKER_DEVICE_NAME")
+# fixed rate a Bluetooth A2DP sink negotiated (check with `bluealsa-cli
+# info <transport>` — "Sampling: NNNNN Hz") — set only when
+# SPEAKER_DEVICE_NAME needs resampling done in Python (see play_pcm16)
+SPEAKER_SAMPLE_RATE = int(os.environ["SPEAKER_SAMPLE_RATE"]) if os.environ.get("SPEAKER_SAMPLE_RATE") else None
 FRAME_MS = 20
 # Must match orchestrator/speech_io.py's TTS_SAMPLE_RATE (OpenAI `pcm`
 # responses are fixed at 24kHz) — raw PCM carries no header to read this from.
@@ -200,6 +204,17 @@ def play_pcm16(audio_bytes: bytes, sample_rate: int):
     log.info("DEBUG: play_pcm16 samples=%d peak=%.0f duration=%.2fs rate=%d", len(samples), peak, duration_s, sample_rate)
     if peak > 0:
         samples = samples / peak * 30000
+    if SPEAKER_SAMPLE_RATE and sample_rate != SPEAKER_SAMPLE_RATE:
+        # A Bluetooth A2DP sink's negotiated rate (e.g. 48000Hz) is
+        # usually fixed, and unlike capture there's no ~/.asoundrc
+        # "plug" wrapper PortAudio will actually enumerate for playback
+        # (confirmed live: "jbl_plug" never appeared in
+        # sd.query_devices() at all, only the raw "jbl_a2dp") — resample
+        # here instead of depending on ALSA to do it.
+        x_old = np.linspace(0, 1, len(samples))
+        x_new = np.linspace(0, 1, int(len(samples) * SPEAKER_SAMPLE_RATE / sample_rate))
+        samples = np.interp(x_new, x_old, samples)
+        sample_rate = SPEAKER_SAMPLE_RATE
     sd.play(samples.astype(np.int16), samplerate=sample_rate, device=SPEAKER_DEVICE_NAME, blocking=True)
     log.info("DEBUG: sd.play() returned")
 
