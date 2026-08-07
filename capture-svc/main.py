@@ -34,6 +34,14 @@ BUTTON_GPIO_PIN = os.environ.get("BUTTON_GPIO_PIN")
 # capture-svc speaker). Much lower latency; costs Claude as the model.
 USE_REALTIME = os.environ.get("USE_REALTIME", "0") == "1"
 SAMPLE_RATE = 16000
+# ALSA device names to use explicitly instead of relying on PortAudio's
+# "default" resolution — see _select_mic_stream_params for why. Match
+# the pcm names in ~/.asoundrc (e.g. "m5mic_plug" / "jbl_a2dp" on the
+# Pi with the M5StickC mic + JBL speaker). Leave unset to keep using
+# whatever device PortAudio picks as default (fine on Windows/normal
+# setups where that resolution works correctly).
+MIC_DEVICE_NAME = os.environ.get("MIC_DEVICE_NAME")
+SPEAKER_DEVICE_NAME = os.environ.get("SPEAKER_DEVICE_NAME")
 FRAME_MS = 20
 # Must match orchestrator/speech_io.py's TTS_SAMPLE_RATE (OpenAI `pcm`
 # responses are fixed at 24kHz) — raw PCM carries no header to read this from.
@@ -88,6 +96,20 @@ def _select_mic_stream_params():
     high-energy spikes and break clap detection entirely. Falls back to
     the default device at SAMPLE_RATE when no WASAPI device exists
     (e.g. Linux, where this problem doesn't happen)."""
+    if MIC_DEVICE_NAME:
+        # explicit override, by name — PortAudio's own "default" device
+        # resolution doesn't reliably follow ~/.asoundrc's pcm.!default
+        # (confirmed live on the Pi: sd.default.device pointed at a raw
+        # hw:X,Y ALSA loopback device instead of the named "asym"
+        # default we configured), so name the real device directly
+        # instead of fighting that resolution.
+        try:
+            for i, dev in enumerate(sd.query_devices()):
+                if dev["name"] == MIC_DEVICE_NAME and dev["max_input_channels"] > 0:
+                    return i, int(dev["default_samplerate"])
+            log.warning("MIC_DEVICE_NAME=%s not found among input devices, falling back", MIC_DEVICE_NAME)
+        except Exception:
+            log.exception("MIC_DEVICE_NAME=%s lookup failed, falling back", MIC_DEVICE_NAME)
     try:
         for i, dev in enumerate(sd.query_devices()):
             if dev["max_input_channels"] > 0:
@@ -178,7 +200,7 @@ def play_pcm16(audio_bytes: bytes, sample_rate: int):
     log.info("DEBUG: play_pcm16 samples=%d peak=%.0f duration=%.2fs rate=%d", len(samples), peak, duration_s, sample_rate)
     if peak > 0:
         samples = samples / peak * 30000
-    sd.play(samples.astype(np.int16), samplerate=sample_rate, blocking=True)
+    sd.play(samples.astype(np.int16), samplerate=sample_rate, device=SPEAKER_DEVICE_NAME, blocking=True)
     log.info("DEBUG: sd.play() returned")
 
 

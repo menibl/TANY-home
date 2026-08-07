@@ -34,5 +34,12 @@ services:
       - CLAP_REFRACTORY_MS=${CLAP_REFRACTORY_MS:-100}
       - CLAP_MAX_MS=${CLAP_MAX_MS:-60}
       - USE_REALTIME=0
+      # PortAudio's own "default" device resolution doesn't reliably
+      # follow ~/.asoundrc's pcm.!default (confirmed live: it picked a
+      # raw hw:X,Y ALSA loopback device instead) — name the real
+      # devices explicitly instead of fighting that. Match the pcm
+      # names actually defined in ~/.asoundrc.
+      - MIC_DEVICE_NAME=${MIC_DEVICE_NAME:-m5mic_plug}
+      - SPEAKER_DEVICE_NAME=${SPEAKER_DEVICE_NAME:-jbl_a2dp}
       # - BUTTON_GPIO_PIN=17          # uncomment for step 3
     restart: unless-stopped
