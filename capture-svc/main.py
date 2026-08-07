@@ -93,14 +93,15 @@ def set_status(state: str, text: str = ""):
     web_ui.broadcast_status(state, text)
 
 
-def _select_mic_stream_params():
+def _select_mic_stream_params(device_name=None):
     """Prefer a WASAPI input device at its own native sample rate.
     Opening the default device directly at 16kHz (MME on Windows) was
     observed to produce periodic buffer glitches that read as false
     high-energy spikes and break clap detection entirely. Falls back to
     the default device at SAMPLE_RATE when no WASAPI device exists
     (e.g. Linux, where this problem doesn't happen)."""
-    if MIC_DEVICE_NAME:
+    device_name = device_name if device_name is not None else MIC_DEVICE_NAME
+    if device_name:
         # explicit override, by name — PortAudio's own "default" device
         # resolution doesn't reliably follow ~/.asoundrc's pcm.!default
         # (confirmed live on the Pi: sd.default.device pointed at a raw
@@ -109,11 +110,11 @@ def _select_mic_stream_params():
         # instead of fighting that resolution.
         try:
             for i, dev in enumerate(sd.query_devices()):
-                if dev["name"] == MIC_DEVICE_NAME and dev["max_input_channels"] > 0:
+                if dev["name"] == device_name and dev["max_input_channels"] > 0:
                     return i, int(dev["default_samplerate"])
-            log.warning("MIC_DEVICE_NAME=%s not found among input devices, falling back", MIC_DEVICE_NAME)
+            log.warning("device %s not found among input devices, falling back", device_name)
         except Exception:
-            log.exception("MIC_DEVICE_NAME=%s lookup failed, falling back", MIC_DEVICE_NAME)
+            log.exception("device %s lookup failed, falling back", device_name)
     try:
         for i, dev in enumerate(sd.query_devices()):
             if dev["max_input_channels"] > 0:
@@ -130,30 +131,51 @@ _DOWNSAMPLE_FACTOR = max(1, _MIC_NATIVE_RATE // SAMPLE_RATE)
 log.info("mic input: device=%s native_rate=%d downsample_factor=%d",
           _MIC_DEVICE, _MIC_NATIVE_RATE, _DOWNSAMPLE_FACTOR)
 
+# Optional second mic, for the "loudest wins" dual-mic mode in
+# open_conversation_session (e.g. M5StickC over WiFi as primary, a USB
+# mic as secondary, or vice versa) — only the live conversation uses
+# both; the clap detector in main_loop stays on the primary alone.
+_MIC_DEVICE_2 = _MIC_NATIVE_RATE_2 = _DOWNSAMPLE_FACTOR_2 = None
+if MIC_DEVICE_NAME_2:
+    _MIC_DEVICE_2, _MIC_NATIVE_RATE_2 = _select_mic_stream_params(MIC_DEVICE_NAME_2)
+    _DOWNSAMPLE_FACTOR_2 = max(1, _MIC_NATIVE_RATE_2 // SAMPLE_RATE)
+    log.info("secondary mic input: device=%s native_rate=%d downsample_factor=%d",
+              _MIC_DEVICE_2, _MIC_NATIVE_RATE_2, _DOWNSAMPLE_FACTOR_2)
 
-def _downsample(frame: np.ndarray) -> np.ndarray:
-    if _DOWNSAMPLE_FACTOR == 1:
+
+def _downsample(frame: np.ndarray, factor: int) -> np.ndarray:
+    if factor == 1:
         return frame
-    n = (len(frame) // _DOWNSAMPLE_FACTOR) * _DOWNSAMPLE_FACTOR
-    return frame[:n].reshape(-1, _DOWNSAMPLE_FACTOR).mean(axis=1).astype(np.int16)
+    n = (len(frame) // factor) * factor
+    return frame[:n].reshape(-1, factor).mean(axis=1).astype(np.int16)
 
 
-def open_mic_stream(frame_callback):
+def _frame_energy(frame: np.ndarray) -> float:
+    return float(np.sqrt(np.mean(frame.astype(np.float64) ** 2)))
+
+
+def open_mic_stream(frame_callback, device=None, native_rate=None, downsample_factor=None):
     """Opens an input stream that always delivers SAMPLE_RATE (16kHz)
     int16 mono frames to frame_callback(frame: np.ndarray), regardless
-    of the underlying device's native rate."""
-    native_frame_size = int(_MIC_NATIVE_RATE * FRAME_MS / 1000)
+    of the underlying device's native rate. Defaults to the primary mic
+    (_MIC_DEVICE); pass the _2 variants explicitly to open the
+    secondary one instead (see open_conversation_session's dual-mic
+    mode)."""
+    device = _MIC_DEVICE if device is None else device
+    native_rate = _MIC_NATIVE_RATE if native_rate is None else native_rate
+    downsample_factor = _DOWNSAMPLE_FACTOR if downsample_factor is None else downsample_factor
+    native_frame_size = int(native_rate * FRAME_MS / 1000)
 
     def _cb(indata, frames, time_info, status):
         raw = np.frombuffer(bytes(indata), dtype=np.int16)
-        frame_callback(_downsample(raw))
+        frame_callback(_downsample(raw, downsample_factor))
 
     return sd.RawInputStream(
-        samplerate=_MIC_NATIVE_RATE,
+        samplerate=native_rate,
         blocksize=native_frame_size,
         dtype="int16",
         channels=1,
-        device=_MIC_DEVICE,
+        device=device,
         callback=_cb,
     )
 
@@ -277,23 +299,49 @@ async def open_conversation_session(user_id: str | None, certain: bool):
         # capture stream physically open and fighting the playback
         # stream for the link. Physically stop/close the mic stream
         # while playing a reply, then reopen it once done.
-        mic_state = {"stream": None}
+        mic_state = {"streams": []}
+        # "Loudest wins": with a second mic configured (MIC_DEVICE_NAME_2 —
+        # e.g. the M5StickC over WiFi as primary, a USB mic as secondary),
+        # each mic's callback only forwards its frame if it's currently
+        # louder than the other's most recently seen frame. The two
+        # streams run on independent PortAudio threads with their own
+        # clocks, not sample-aligned — this is a coarse per-frame gate,
+        # not real synchronized mixing, but it's enough to let whichever
+        # mic the person is actually closer to/talking into dominate.
+        _last_energy = {"primary": 0.0, "secondary": 0.0}
 
-        def mic_callback(frame: np.ndarray):
-            # runs on PortAudio's own thread, not the event loop thread —
-            # asyncio.Queue isn't thread-safe, so hop back via call_soon_threadsafe.
-            loop.call_soon_threadsafe(mic_queue.put_nowait, frame.tobytes())
+        def make_mic_callback(key: str, other_key: str):
+            def cb(frame: np.ndarray):
+                # runs on PortAudio's own thread, not the event loop
+                # thread — asyncio.Queue isn't thread-safe, so hop back
+                # via call_soon_threadsafe.
+                if MIC_DEVICE_NAME_2:
+                    energy = _frame_energy(frame)
+                    _last_energy[key] = energy
+                    if energy < _last_energy[other_key]:
+                        return
+                loop.call_soon_threadsafe(mic_queue.put_nowait, frame.tobytes())
+            return cb
 
         def start_mic():
-            if mic_state["stream"] is None:
-                s = open_mic_stream(mic_callback)
-                s.start()
-                mic_state["stream"] = s
+            if mic_state["streams"]:
+                return
+            s1 = open_mic_stream(make_mic_callback("primary", "secondary"))
+            s1.start()
+            mic_state["streams"].append(s1)
+            if MIC_DEVICE_NAME_2:
+                s2 = open_mic_stream(
+                    make_mic_callback("secondary", "primary"),
+                    device=_MIC_DEVICE_2, native_rate=_MIC_NATIVE_RATE_2,
+                    downsample_factor=_DOWNSAMPLE_FACTOR_2,
+                )
+                s2.start()
+                mic_state["streams"].append(s2)
 
         def stop_mic():
-            s = mic_state["stream"]
-            if s is not None:
-                mic_state["stream"] = None
+            streams = mic_state["streams"]
+            mic_state["streams"] = []
+            for s in streams:
                 s.stop()
                 s.close()
 

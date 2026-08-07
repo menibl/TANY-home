@@ -40,6 +40,10 @@ services:
       # devices explicitly instead of fighting that. Match the pcm
       # names actually defined in ~/.asoundrc.
       - MIC_DEVICE_NAME=${MIC_DEVICE_NAME:-m5mic_plug}
+      # optional second mic for "loudest wins" dual-mic mode in
+      # open_conversation_session (see main.py) — leave unset to use
+      # only the primary mic above
+      - MIC_DEVICE_NAME_2=${MIC_DEVICE_NAME_2:-}
       - SPEAKER_DEVICE_NAME=${SPEAKER_DEVICE_NAME:-jbl_a2dp}
       - SPEAKER_SAMPLE_RATE=${SPEAKER_SAMPLE_RATE:-48000}
       # - BUTTON_GPIO_PIN=17          # uncomment for step 3
