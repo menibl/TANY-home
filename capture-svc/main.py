@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import ssl
+import time
 
 import numpy as np
 import requests
@@ -215,6 +216,20 @@ def identify_from_snapshot(source: str = "rtsp") -> dict:
     return resp.json()
 
 
+def _refresh_audio_devices():
+    """PortAudio builds its ALSA/bluealsa device table once at process
+    startup and doesn't notice a device that disappears and comes back
+    later — confirmed live: bluetoothctl already showed "Connected: yes"
+    for the JBL at the exact moment sd.play() raised "No output device
+    matching 'jbl_a2dp'" against this same long-running process. The
+    JBL flaps on its own (dozens of reconnects/hour, a pre-existing BT
+    stability issue, not this code's to fix) — re-initializing PortAudio
+    is the only way a reconnect becomes visible without restarting the
+    whole container every time."""
+    sd._terminate()
+    sd._initialize()
+
+
 def play_pcm16(audio_bytes: bytes, sample_rate: int):
     """OpenAI's `pcm` TTS output comes back at a few percent of full
     scale (near-inaudible on real speakers), so normalize to a sane
@@ -238,8 +253,22 @@ def play_pcm16(audio_bytes: bytes, sample_rate: int):
         x_new = np.linspace(0, 1, int(len(samples) * SPEAKER_SAMPLE_RATE / sample_rate))
         samples = np.interp(x_new, x_old, samples)
         sample_rate = SPEAKER_SAMPLE_RATE
-    sd.play(samples.astype(np.int16), samplerate=sample_rate, device=SPEAKER_DEVICE_NAME, blocking=True)
-    log.info("DEBUG: sd.play() returned")
+    samples = samples.astype(np.int16)
+    for attempt in range(3):
+        try:
+            sd.play(samples, samplerate=sample_rate, device=SPEAKER_DEVICE_NAME, blocking=True)
+            log.info("DEBUG: sd.play() returned")
+            return
+        except ValueError:
+            if attempt == 2:
+                raise
+            log.warning(
+                "speaker device %r not found (attempt %d/3) -- JBL likely mid-reconnect, "
+                "refreshing PortAudio device table and retrying",
+                SPEAKER_DEVICE_NAME, attempt + 1,
+            )
+            _refresh_audio_devices()
+            time.sleep(1)
 
 
 async def say(text: str):
