@@ -35,6 +35,7 @@ import logging
 import os
 
 import httpx
+import numpy as np
 import websockets
 from fastapi import WebSocket, WebSocketDisconnect
 
@@ -48,6 +49,22 @@ REALTIME_MODEL = os.environ.get("REALTIME_MODEL", "gpt-realtime")
 REALTIME_VOICE = os.environ.get("REALTIME_VOICE", "marin")
 VOICE_SVC_URL = os.environ.get("VOICE_SVC_URL", "http://voice-id-svc:8002")
 REALTIME_WS_URL = f"wss://api.openai.com/v1/realtime?model={REALTIME_MODEL}"
+
+# capture-svc's mic pipeline runs at 16kHz (SAMPLE_RATE in main.py) --
+# OpenAI's Realtime API rejects input.format.rate below 24000
+# ("integer below minimum value", confirmed live), so every frame gets
+# upsampled to this before being forwarded.
+CAPTURE_SVC_MIC_RATE = 16000
+REALTIME_INPUT_RATE = 24000
+
+
+def _upsample_pcm16(frame: bytes, from_rate: int, to_rate: int) -> bytes:
+    samples = np.frombuffer(frame, dtype=np.int16).astype(np.float64)
+    if len(samples) < 2 or from_rate == to_rate:
+        return frame
+    x_old = np.linspace(0, 1, len(samples))
+    x_new = np.linspace(0, 1, int(len(samples) * to_rate / from_rate))
+    return np.interp(x_new, x_old, samples).astype(np.int16).tobytes()
 
 # Mirrors realtime.py's client-side-only tool — here the relay itself
 # (not a browser) intercepts it and ends the session after the farewell
@@ -172,12 +189,15 @@ async def run(client_ws: WebSocket, *, user_id, certain, system_prompt, tools, r
                     # playback: capture-svc treats every reply as raw
                     # PCM16, so if the actual default output format
                     # wasn't PCM16, decoding it as int16 would look
-                    # exactly like that. capture-svc's mic audio is
-                    # 16kHz (SAMPLE_RATE in main.py), not the example
-                    # 24000 from OpenAI's docs -- must match what's
-                    # actually forwarded, not assumed.
+                    # exactly like that. Input rate must be >=24000 --
+                    # OpenAI rejects anything lower ("integer below
+                    # minimum value", confirmed live sending 16000, the
+                    # rate capture-svc's mic actually runs at, see
+                    # SAMPLE_RATE in main.py) -- pump_mic_up() upsamples
+                    # every frame to this rate before forwarding rather
+                    # than touching capture-svc's own 16kHz pipeline.
                     "input": {
-                        "format": {"type": "audio/pcm", "rate": 16000},
+                        "format": {"type": "audio/pcm", "rate": REALTIME_INPUT_RATE},
                         # threshold was 0.6 -- too strict for the M5's
                         # audio path (UDP -> ALSA loopback -> dual-mic
                         # gating -> downsample, noisier/jitterier than a
@@ -223,9 +243,13 @@ async def run(client_ws: WebSocket, *, user_id, certain, system_prompt, tools, r
                                     "user_id": state["user_id"],
                                     "confidence": confirmed["confidence"],
                                 }))
+                    # upsampled copy for OpenAI only -- endpointer/voice-id
+                    # above stay on the original 16kHz frame, which is what
+                    # they (and capture-svc) actually run at
+                    oai_frame = _upsample_pcm16(frame, CAPTURE_SVC_MIC_RATE, REALTIME_INPUT_RATE)
                     await oai_ws.send(json.dumps({
                         "type": "input_audio_buffer.append",
-                        "audio": base64.b64encode(frame).decode(),
+                        "audio": base64.b64encode(oai_frame).decode(),
                     }))
             except WebSocketDisconnect:
                 pass
