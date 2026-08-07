@@ -145,6 +145,30 @@ if MIC_DEVICE_NAME_2:
               _MIC_DEVICE_2, _MIC_NATIVE_RATE_2, _DOWNSAMPLE_FACTOR_2)
 
 
+def _refresh_mic_params():
+    """Re-resolves mic device indices/rates against a freshly
+    re-initialized PortAudio device table. Same reasoning as
+    _refresh_audio_devices() below for the speaker: PortAudio builds its
+    device table once at process startup, so a USB mic unplugged (or
+    replugged) after that stays invisible under its cached index/name
+    lookup forever otherwise -- confirmed live, testing the M5 mic alone
+    by unplugging the USB one mid-session. Called once per clap-listen
+    cycle and once at the start of each new conversation, not on every
+    mic restart mid-conversation (that would add PortAudio re-init
+    latency to every single turn for an edge case that isn't happening
+    mid-turn)."""
+    global _MIC_DEVICE, _MIC_NATIVE_RATE, _DOWNSAMPLE_FACTOR
+    global _MIC_DEVICE_2, _MIC_NATIVE_RATE_2, _DOWNSAMPLE_FACTOR_2
+    _refresh_audio_devices()
+    _MIC_DEVICE, _MIC_NATIVE_RATE = _select_mic_stream_params()
+    _DOWNSAMPLE_FACTOR = max(1, _MIC_NATIVE_RATE // SAMPLE_RATE)
+    if MIC_DEVICE_NAME_2:
+        _MIC_DEVICE_2, _MIC_NATIVE_RATE_2 = _select_mic_stream_params(MIC_DEVICE_NAME_2)
+        _DOWNSAMPLE_FACTOR_2 = max(1, _MIC_NATIVE_RATE_2 // SAMPLE_RATE)
+    log.info("mic devices refreshed: primary=%s (rate=%d) secondary=%s (rate=%s)",
+              _MIC_DEVICE, _MIC_NATIVE_RATE, _MIC_DEVICE_2, _MIC_NATIVE_RATE_2)
+
+
 def _downsample(frame: np.ndarray, factor: int) -> np.ndarray:
     if factor == 1:
         return frame
@@ -375,6 +399,14 @@ async def open_conversation_session(user_id: str | None, certain: bool):
                 s.stop()
                 s.close()
 
+        # refresh once here, not on every mid-session start_mic() restart
+        # (each TTS reply stops/restarts the mic) -- a mic getting
+        # unplugged/replugged happens between conversations, not between
+        # a reply finishing and the next one starting a moment later, so
+        # only the first start_mic() of a session needs a fresh device
+        # table; repeating it every turn would just add latency for no
+        # benefit.
+        _refresh_mic_params()
         start_mic()
 
         async def send_mic_audio():
@@ -461,6 +493,7 @@ async def main_loop():
 
     while True:
         set_status("listening")
+        _refresh_mic_params()
         # only held open while waiting for the clap — held open through the
         # whole conversation too, it fights the session's own mic stream for
         # the same device and both end up starved (near-silent audio in)
