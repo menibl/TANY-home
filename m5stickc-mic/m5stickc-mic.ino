@@ -94,7 +94,8 @@ void setupWiFi() {
   Serial.println();
   Serial.print("Connected, IP: ");
   Serial.println(WiFi.localIP());
-  setEyeState(BLUE, false);
+  // screen doesn't exist yet — M5.begin() runs after this on purpose
+  // (see setup()) — the eyes get drawn there instead.
 }
 
 void setupMic() {
@@ -120,11 +121,18 @@ void setupMic() {
 }
 
 void setup() {
+  // WiFi connects BEFORE M5.begin() on purpose — M5.begin() also inits
+  // the AXP192 power-management chip and the LCD backlight (LEDC PWM),
+  // and doing that first was seen live to break WiFi association
+  // entirely (endless "Connecting..." with no error, plus LEDC init
+  // errors in the serial log). Connecting to WiFi first, while the
+  // chip is still in its clean post-boot power state, then bringing up
+  // the screen after, avoids whatever that interaction was.
+  Serial.begin(115200);
+  setupWiFi();
   M5.begin();
   M5.Lcd.setRotation(3);
-  Serial.begin(115200);
-  drawEyes(RED, false);  // not connected yet
-  setupWiFi();
+  setEyeState(BLUE, false);  // already connected by the time the screen exists
   setupMic();
   udp.begin(0);
   Serial.println("Streaming mic audio via UDP...");
