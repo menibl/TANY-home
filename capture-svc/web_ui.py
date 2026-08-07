@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 import requests
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel
 
 log = logging.getLogger("capture-svc.web_ui")
@@ -49,6 +49,16 @@ async def manual_trigger():
     means you're at the computer, not wherever the RTSP camera points."""
     _cfg["manual_trigger_event"].set()
     return {"ok": True}
+
+
+@app.get("/api/state")
+async def state_plain():
+    """Plain-text current state (just the word, e.g. "listening" or
+    "session") for clients too small to bother parsing JSON — the
+    M5StickC firmware polls this to know whether a conversation is
+    active (anything other than "listening", the idle/waiting-for-
+    trigger state) so it can animate its eyes accordingly."""
+    return PlainTextResponse(_last_state["state"])
 
 
 @app.post("/api/end-session")

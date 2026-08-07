@@ -24,6 +24,7 @@
 #include <M5StickCPlus.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
+#include <HTTPClient.h>
 #include "driver/i2s.h"
 
 const char* WIFI_SSID = "Meni";
@@ -33,6 +34,17 @@ const char* WIFI_PASSWORD = "0543265994";
 // DHCP reassigned it after each reboot). Check with `hostname -I` on the Pi.
 const char* PI_IP = "192.168.68.76";
 const int PI_PORT = 5005;
+// Same endpoint the dashboard's own manual-trigger button already
+// posts to (capture-svc/web_ui.py) — Button A on the M5StickC becomes
+// a second physical trigger alongside the double-clap detector, no
+// Pi-side code changes needed at all.
+const char* PI_TRIGGER_URL = "http://192.168.68.76:8010/api/trigger";
+// Polled to animate the eyes while a conversation is active, so it's
+// visible at a glance whether the bot is still busy or has gone back
+// to idle (needing a fresh clap/button press to start again). Plain
+// text ("listening", "session", ...) not JSON — nothing on this board
+// to parse JSON with, and we only need to compare the whole string.
+const char* PI_STATE_URL = "http://192.168.68.76:8010/api/state";
 
 #define I2S_PORT      I2S_NUM_0
 #define SAMPLE_RATE   16000
@@ -53,8 +65,13 @@ int16_t audioBuffer[BUFFER_LEN];
 
 // ---- eyes -------------------------------------------------------------
 
-const int EYE_CY = 65, EYE_R_NARROW = 14, EYE_R_WIDE = 24;
-const int EYE_CX1 = 45, EYE_CX2 = 90;
+// ~3x the original size (was CY=65, R_NARROW=14, R_WIDE=24, CX=45/90) —
+// centers pushed apart and toward the screen edges too, otherwise the
+// bigger circles would overlap. Checked against the rotated 240x135
+// panel: worst case (both eyes wide, r=55) spans x=[5,235], y=[12,122],
+// still inside bounds with a few px of margin.
+const int EYE_CY = 67, EYE_R_NARROW = 40, EYE_R_WIDE = 55;
+const int EYE_CX1 = 60, EYE_CX2 = 180;
 bool eyesWide = false;
 uint16_t eyeColor = RED;
 
@@ -138,9 +155,46 @@ void setup() {
   Serial.println("Streaming mic audio via UDP...");
 }
 
+// True whenever the Pi reports anything other than "listening" (its
+// idle, waiting-for-trigger state) — i.e. a conversation is in
+// progress somewhere between clap/button and the reply finishing.
+bool conversationActive = false;
+unsigned long lastStatusPoll = 0;
+const unsigned long STATUS_POLL_INTERVAL_MS = 700;
+
+void checkStatus() {
+  unsigned long now = millis();
+  if (now - lastStatusPoll < STATUS_POLL_INTERVAL_MS) return;
+  lastStatusPoll = now;
+  if (WiFi.status() != WL_CONNECTED) return;
+  HTTPClient http;
+  http.begin(PI_STATE_URL);
+  http.setTimeout(1500);
+  int code = http.GET();
+  if (code == 200) {
+    conversationActive = (http.getString() != "listening");
+  }
+  http.end();
+}
+
+void checkButton() {
+  M5.update();  // refreshes button state — must be called every loop
+  if (M5.BtnA.wasPressed() && WiFi.status() == WL_CONNECTED) {
+    Serial.println("Button A pressed -> triggering");
+    HTTPClient http;
+    http.begin(PI_TRIGGER_URL);
+    http.setTimeout(3000);
+    int code = http.POST("");
+    Serial.printf("trigger POST -> HTTP %d\n", code);
+    http.end();
+  }
+}
+
 void loop() {
   size_t bytesRead = 0;
   i2s_read(I2S_PORT, audioBuffer, sizeof(audioBuffer), &bytesRead, portMAX_DELAY);
+  checkButton();  // polled once per mic buffer (~32ms) — plenty fast for a button press
+  checkStatus();  // internally rate-limited to STATUS_POLL_INTERVAL_MS
   if (bytesRead == 0) return;
 
   int sampleCount = bytesRead / sizeof(int16_t);
@@ -152,7 +206,16 @@ void loop() {
   }
 
   if (WiFi.status() == WL_CONNECTED) {
-    setEyeState(BLUE, peak > SOUND_THRESHOLD);
+    if (conversationActive) {
+      // pulse wide/narrow every 400ms, independent of the mic's own
+      // peak level — a steady heartbeat says "bot is busy with you"
+      // at a glance, distinct from the idle VU-meter reaction below,
+      // so it's obvious when it's done and waiting for a new trigger.
+      bool pulse = (millis() / 400) % 2 == 0;
+      setEyeState(GREEN, pulse);
+    } else {
+      setEyeState(BLUE, peak > SOUND_THRESHOLD);
+    }
     udp.beginPacket(PI_IP, PI_PORT);
     udp.write((uint8_t*)audioBuffer, bytesRead);
     udp.endPacket();
