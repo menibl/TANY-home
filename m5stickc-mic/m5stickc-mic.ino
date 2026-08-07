@@ -139,6 +139,16 @@ void setupMic() {
   };
   i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL);
   i2s_set_pin(I2S_PORT, &pin_config);
+  // Confirmed live: i2s_read() succeeds (no error, real bytesRead) but
+  // every sample comes back exactly 0 -- eyes never widen even on a
+  // loud clap right next to the mic, and raw UDP packets received on
+  // the Pi are 100% zero-filled too, so this isn't a network/timing
+  // issue, it's the I2S capture itself. A known ESP32-Arduino PDM
+  // gotcha: i2s_driver_install() alone doesn't always actually clock
+  // the PDM decimation filter -- an explicit i2s_set_clk() after pin
+  // setup is the documented fix for exactly "reads succeed, data is
+  // silently all-zero."
+  i2s_set_clk(I2S_PORT, SAMPLE_RATE, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_MONO);
 }
 
 void setup() {
@@ -210,6 +220,15 @@ void loop() {
     int16_t v = audioBuffer[i];
     if (v < 0) v = -v;
     if (v > peak) peak = v;
+  }
+
+  // Serial-only mic-level check, independent of WiFi/UDP/the Pi
+  // entirely -- confirms whether i2s_set_clk() above actually fixed
+  // real capture before chasing anything further downstream.
+  static unsigned long lastPeakPrint = 0;
+  if (millis() - lastPeakPrint >= 500) {
+    lastPeakPrint = millis();
+    Serial.printf("mic peak=%d\n", peak);
   }
 
   if (WiFi.status() == WL_CONNECTED) {
