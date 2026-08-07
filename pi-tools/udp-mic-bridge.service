@@ -1,0 +1,16 @@
+[Unit]
+Description=M5StickC UDP mic bridge -> ALSA loopback
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=meni
+WorkingDirectory=/home/meni/TANY-home
+ExecStartPre=/sbin/modprobe snd-aloop
+ExecStart=/usr/bin/python3 /home/meni/TANY-home/pi-tools/udp_mic_bridge.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
