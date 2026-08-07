@@ -21,6 +21,14 @@ def main():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("0.0.0.0", UDP_PORT))
 
+    # plughw, not raw hw: the Loopback device doesn't actually support
+    # 16000Hz — aplay against "hw:Loopback,0,0" silently played at
+    # 44100Hz instead (its own "Warning: rate is not accurate (requested
+    # = 16000Hz, got = 44100Hz)") while treating the incoming bytes as
+    # still being 16kHz-paced, i.e. played back ~2.75x too fast — not
+    # quiet, just garbled into noise. plughw resamples properly instead
+    # of silently running the hardware clock at the wrong rate.
+    #
     # -B/-F: a much bigger buffer than aplay's default — UDP packets from
     # the M5StickC arrive in irregular bursts (network jitter, not a
     # steady clocked stream the way a real audio device would produce
@@ -30,7 +38,7 @@ def main():
     # all played back a clean signal, so the loopback device itself was
     # never the problem).
     proc = subprocess.Popen(
-        ["aplay", "-D", "hw:Loopback,0,0", "-f", "S16_LE",
+        ["aplay", "-D", "plughw:Loopback,0,0", "-f", "S16_LE",
          "-r", str(SAMPLE_RATE), "-c", "1", "-t", "raw",
          "-B", "500000", "-F", "50000", "-"],
         stdin=subprocess.PIPE,
