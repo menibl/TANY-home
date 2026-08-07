@@ -41,6 +41,7 @@ SAMPLE_RATE = 16000
 # whatever device PortAudio picks as default (fine on Windows/normal
 # setups where that resolution works correctly).
 MIC_DEVICE_NAME = os.environ.get("MIC_DEVICE_NAME")
+MIC_DEVICE_NAME_2 = os.environ.get("MIC_DEVICE_NAME_2")
 SPEAKER_DEVICE_NAME = os.environ.get("SPEAKER_DEVICE_NAME")
 # fixed rate a Bluetooth A2DP sink negotiated (check with `bluealsa-cli
 # info <transport>` — "Sampling: NNNNN Hz") — set only when
