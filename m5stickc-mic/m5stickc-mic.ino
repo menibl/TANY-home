@@ -9,9 +9,19 @@
 // an ordinary capture device (see README in pi-tools/), no Python
 // changes needed there at all.
 //
+// Screen shows two eyes: colour = connection state (red = no WiFi, blue
+// = connected and streaming), and they widen briefly whenever the mic
+// picks up sound above a simple threshold — a visual "I hear you". This
+// is a local VU-meter reaction, not a confirmation the Pi actually
+// received that specific packet (UDP is fire-and-forget, one-way, no
+// ack channel back from the Pi) — it tells you the mic itself is alive,
+// not that the Pi-side pipeline is healthy end to end.
+//
 // Board: "M5Stick-C" (or generic ESP32 Dev Module if that's not listed)
-// in Arduino IDE's board manager.
+// in Arduino IDE's board manager. Library: M5StickCPlus (Library
+// Manager -> search "M5StickCPlus" by M5Stack).
 
+#include <M5StickCPlus.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include "driver/i2s.h"
@@ -33,8 +43,38 @@ const int PI_PORT = 5005;
 #define MIC_CLK_PIN   0
 #define MIC_DATA_PIN  34
 
+// Peak amplitude (of int16 full scale 32767) above which we consider
+// "sound heard" for the eye-widen reaction. Tune if it feels too
+// twitchy or too dead in practice.
+#define SOUND_THRESHOLD  1500
+
 WiFiUDP udp;
 int16_t audioBuffer[BUFFER_LEN];
+
+// ---- eyes -------------------------------------------------------------
+
+const int EYE_CY = 65, EYE_R_NARROW = 14, EYE_R_WIDE = 24;
+const int EYE_CX1 = 45, EYE_CX2 = 90;
+bool eyesWide = false;
+uint16_t eyeColor = RED;
+
+void drawEyes(uint16_t color, bool wide) {
+  M5.Lcd.fillScreen(BLACK);
+  int r = wide ? EYE_R_WIDE : EYE_R_NARROW;
+  M5.Lcd.fillCircle(EYE_CX1, EYE_CY, r, color);
+  M5.Lcd.fillCircle(EYE_CX2, EYE_CY, r, color);
+  M5.Lcd.fillCircle(EYE_CX1, EYE_CY, r / 3, BLACK);
+  M5.Lcd.fillCircle(EYE_CX2, EYE_CY, r / 3, BLACK);
+}
+
+void setEyeState(uint16_t color, bool wide) {
+  if (color == eyeColor && wide == eyesWide) return;  // skip redundant redraws
+  eyeColor = color;
+  eyesWide = wide;
+  drawEyes(color, wide);
+}
+
+// -------------------------------------------------------------------------
 
 void setupWiFi() {
   WiFi.mode(WIFI_STA);
@@ -54,6 +94,7 @@ void setupWiFi() {
   Serial.println();
   Serial.print("Connected, IP: ");
   Serial.println(WiFi.localIP());
+  setEyeState(BLUE, false);
 }
 
 void setupMic() {
@@ -79,7 +120,10 @@ void setupMic() {
 }
 
 void setup() {
+  M5.begin();
+  M5.Lcd.setRotation(3);
   Serial.begin(115200);
+  drawEyes(RED, false);  // not connected yet
   setupWiFi();
   setupMic();
   udp.begin(0);
@@ -89,9 +133,22 @@ void setup() {
 void loop() {
   size_t bytesRead = 0;
   i2s_read(I2S_PORT, audioBuffer, sizeof(audioBuffer), &bytesRead, portMAX_DELAY);
-  if (bytesRead > 0) {
+  if (bytesRead == 0) return;
+
+  int sampleCount = bytesRead / sizeof(int16_t);
+  int16_t peak = 0;
+  for (int i = 0; i < sampleCount; i++) {
+    int16_t v = audioBuffer[i];
+    if (v < 0) v = -v;
+    if (v > peak) peak = v;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    setEyeState(BLUE, peak > SOUND_THRESHOLD);
     udp.beginPacket(PI_IP, PI_PORT);
     udp.write((uint8_t*)audioBuffer, bytesRead);
     udp.endPacket();
+  } else {
+    setEyeState(RED, false);
   }
 }
