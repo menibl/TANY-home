@@ -363,6 +363,7 @@ async def open_conversation_session(user_id: str | None, certain: bool):
         # not real synchronized mixing, but it's enough to let whichever
         # mic the person is actually closer to/talking into dominate.
         _last_energy = {"primary": 0.0, "secondary": 0.0}
+        _debug_frame_count = {"primary": 0, "secondary": 0}
 
         def make_mic_callback(key: str, other_key: str):
             def cb(frame: np.ndarray):
@@ -372,7 +373,12 @@ async def open_conversation_session(user_id: str | None, certain: bool):
                 if MIC_DEVICE_NAME_2:
                     energy = _frame_energy(frame)
                     _last_energy[key] = energy
-                    if energy < _last_energy[other_key]:
+                    won = energy >= _last_energy[other_key]
+                    _debug_frame_count[key] += 1
+                    if _debug_frame_count[key] % 25 == 0:
+                        log.info("DEBUG: mic %s energy=%.1f other(%s)=%.1f forwarded=%s",
+                                  key, energy, other_key, _last_energy[other_key], won)
+                    if not won:
                         return
                 loop.call_soon_threadsafe(mic_queue.put_nowait, frame.tobytes())
             return cb
