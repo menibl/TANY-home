@@ -1,0 +1,13 @@
+[Unit]
+Description=Keep JBL Bluetooth speaker connected
+After=bluetooth.service
+Requires=bluetooth.service
+
+[Service]
+Type=simple
+User=meni
+ExecStart=/home/meni/jbl-reconnect.sh
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
