@@ -54,10 +54,16 @@ const char* PI_END_SESSION_URL = "http://192.168.68.76:8010/api/end-session";
 #define SAMPLE_RATE   16000
 #define BUFFER_LEN    512   // samples per UDP packet (1024 bytes at 16-bit)
 
-// Built-in PDM microphone pins, consistent across the M5StickC family
-// (M5StickC, PLUS, PLUS2 all wire the SPM1423 mic the same way).
+// Built-in PDM microphone pins. DATA was 34 -- confirmed wrong live:
+// mic read exactly 0 always (no error), eyes never widened on a close
+// loud clap, and raw UDP packets received on the Pi were 100%
+// zero-filled. The M5StickCPlus library's own bundled mic example
+// (Examples > M5StickCPlus, matching the exact installed library
+// version) defines its data pin as 33, not 34 -- more authoritative
+// than the "consistent across the family" assumption this used to be
+// written on.
 #define MIC_CLK_PIN   0
-#define MIC_DATA_PIN  34
+#define MIC_DATA_PIN  33
 
 // Peak amplitude (of int16 full scale 32767) above which we consider
 // "sound heard" for the eye-widen reaction. Tune if it feels too
