@@ -164,15 +164,31 @@ async def run(client_ws: WebSocket, *, user_id, certain, system_prompt, tools, r
                 "type": "realtime",
                 "instructions": instructions,
                 "audio": {
-                    # threshold was 0.6 -- too strict for the M5's audio path
-                # (UDP -> ALSA loopback -> dual-mic gating -> downsample,
-                # noisier/jitterier than a direct mic), confirmed live:
-                # OpenAI's server-side VAD never fired a single
-                # speech_started event across 80+ seconds of continuous
-                # forwarded audio, so no reply was ever auto-generated
-                # after the initial greeting.
-                "input": {"turn_detection": {"type": "server_vad", "threshold": 0.3, "silence_duration_ms": 600}},
-                    "output": {"voice": REALTIME_VOICE},
+                    # Explicit format on both sides -- the GA Realtime
+                    # API's docs warn the default shouldn't be relied on
+                    # (they mention "audio/pcmu"/G.711 as an alternative
+                    # output format), and leaving this unset produced
+                    # near-silent, garbled ("noise", peak~93/32767)
+                    # playback: capture-svc treats every reply as raw
+                    # PCM16, so if the actual default output format
+                    # wasn't PCM16, decoding it as int16 would look
+                    # exactly like that. capture-svc's mic audio is
+                    # 16kHz (SAMPLE_RATE in main.py), not the example
+                    # 24000 from OpenAI's docs -- must match what's
+                    # actually forwarded, not assumed.
+                    "input": {
+                        "format": {"type": "audio/pcm", "rate": 16000},
+                        # threshold was 0.6 -- too strict for the M5's
+                        # audio path (UDP -> ALSA loopback -> dual-mic
+                        # gating -> downsample, noisier/jitterier than a
+                        # direct mic), confirmed live: OpenAI's
+                        # server-side VAD never fired a single
+                        # speech_started event across 80+ seconds of
+                        # continuous forwarded audio, so no reply was
+                        # ever auto-generated after the initial greeting.
+                        "turn_detection": {"type": "server_vad", "threshold": 0.3, "silence_duration_ms": 600},
+                    },
+                    "output": {"format": {"type": "audio/pcm", "rate": 24000}, "voice": REALTIME_VOICE},
                 },
                 "tools": realtime_tools,
             },
