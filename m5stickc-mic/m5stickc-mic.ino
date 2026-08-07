@@ -45,6 +45,10 @@ const char* PI_TRIGGER_URL = "http://192.168.68.76:8010/api/trigger";
 // text ("listening", "session", ...) not JSON — nothing on this board
 // to parse JSON with, and we only need to compare the whole string.
 const char* PI_STATE_URL = "http://192.168.68.76:8010/api/state";
+// Same endpoint the dashboard's "end session" button posts to — Button A
+// ends an in-progress conversation instead of starting a new one when
+// pressed while conversationActive is true (see checkButton()).
+const char* PI_END_SESSION_URL = "http://192.168.68.76:8010/api/end-session";
 
 #define I2S_PORT      I2S_NUM_0
 #define SAMPLE_RATE   16000
@@ -180,12 +184,15 @@ void checkStatus() {
 void checkButton() {
   M5.update();  // refreshes button state — must be called every loop
   if (M5.BtnA.wasPressed() && WiFi.status() == WL_CONNECTED) {
-    Serial.println("Button A pressed -> triggering");
+    // conversationActive comes from the last checkStatus() poll (up to
+    // STATUS_POLL_INTERVAL_MS stale) — good enough for a button press.
+    const char* url = conversationActive ? PI_END_SESSION_URL : PI_TRIGGER_URL;
+    Serial.printf("Button A pressed -> %s\n", conversationActive ? "ending session" : "triggering");
     HTTPClient http;
-    http.begin(PI_TRIGGER_URL);
+    http.begin(url);
     http.setTimeout(3000);
     int code = http.POST("");
-    Serial.printf("trigger POST -> HTTP %d\n", code);
+    Serial.printf("POST -> HTTP %d\n", code);
     http.end();
   }
 }

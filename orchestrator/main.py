@@ -32,6 +32,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+SESSION_IDLE_TIMEOUT_S = float(os.environ.get("SESSION_IDLE_TIMEOUT_S", "20"))
+
 PROFILE_STORE_URL = os.environ.get("PROFILE_STORE_URL", "redis://profile-store:6379")
 TANY_BRIDGE_URL = os.environ.get("TANY_BRIDGE_URL", "http://tany-bridge:8005")
 VOICE_SVC_URL = os.environ.get("VOICE_SVC_URL", "http://voice-id-svc:8002")
@@ -109,6 +111,26 @@ async def tts(req: TTSRequest):
     )
 
 
+async def _next_utterance(ws: WebSocket, endpointer: SilenceBasedEndpointer, timeout_s: float) -> bytes | None:
+    """Waits for the next complete utterance, giving up (returning None)
+    if `timeout_s` passes with no speech — capture-svc's mic stream keeps
+    sending raw frames continuously (background noise included) the whole
+    time it's open, so a plain per-frame timeout would never fire; this
+    tracks a single deadline across as many frames as it takes."""
+    deadline = time.monotonic() + timeout_s
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        try:
+            frame = await asyncio.wait_for(ws.receive_bytes(), timeout=remaining)
+        except asyncio.TimeoutError:
+            return None
+        utterance = endpointer.push(frame)
+        if utterance is not None:
+            return utterance
+
+
 @app.websocket("/session")
 async def session(ws: WebSocket):
     await ws.accept()
@@ -144,10 +166,11 @@ async def session(ws: WebSocket):
 
     try:
         while True:
-            frame = await ws.receive_bytes()
-            utterance = endpointer.push(frame)
+            utterance = await _next_utterance(ws, endpointer, SESSION_IDLE_TIMEOUT_S)
             if utterance is None:
-                continue
+                log.info("session auto-ended (idle %.0fs): user_id=%s", SESSION_IDLE_TIMEOUT_S, user_id)
+                await ws.send_text(json.dumps({"type": "session_end", "reason": "idle_timeout"}))
+                return
 
             # Stage 3 fallback: still unidentified -> try to confirm now that
             # we have real speech, and update the system prompt if it lands.
