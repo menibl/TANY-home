@@ -164,7 +164,14 @@ async def run(client_ws: WebSocket, *, user_id, certain, system_prompt, tools, r
                 "type": "realtime",
                 "instructions": instructions,
                 "audio": {
-                    "input": {"turn_detection": {"type": "server_vad", "threshold": 0.6, "silence_duration_ms": 600}},
+                    # threshold was 0.6 -- too strict for the M5's audio path
+                # (UDP -> ALSA loopback -> dual-mic gating -> downsample,
+                # noisier/jitterier than a direct mic), confirmed live:
+                # OpenAI's server-side VAD never fired a single
+                # speech_started event across 80+ seconds of continuous
+                # forwarded audio, so no reply was ever auto-generated
+                # after the initial greeting.
+                "input": {"turn_detection": {"type": "server_vad", "threshold": 0.3, "silence_duration_ms": 600}},
                     "output": {"voice": REALTIME_VOICE},
                 },
                 "tools": realtime_tools,
