@@ -39,7 +39,11 @@ services:
       # raw hw:X,Y ALSA loopback device instead) — name the real
       # devices explicitly instead of fighting that. Match the pcm
       # names actually defined in ~/.asoundrc.
-      - MIC_DEVICE_NAME=${MIC_DEVICE_NAME:-m5mic_plug}
+      # ReSpeaker 2-Mics Pi HAT v2.0 -- the board's actual codec chip
+      # is a TI TLV320AIC3104, not the WM8960 assumed early on (chip
+      # marking "AC3104I" is TI's shortened package print). M5/USB were
+      # the mic path until this HAT was confirmed working end-to-end.
+      - MIC_DEVICE_NAME=${MIC_DEVICE_NAME:-respeaker_plug}
       # optional second mic for "loudest wins" dual-mic mode in
       # open_conversation_session (see main.py) — leave unset to use
       # only the primary mic above

@@ -1,0 +1,113 @@
+/*
+* Copyright (C) 2024 Seeed Studio
+* bbear <bbear953308023@gmail.com>
+*
+* MIT License
+*
+* Official Seeed device-tree overlay for the ReSpeaker 2-Mics Pi HAT
+* v2.0, mirrored here from
+* https://github.com/Seeed-Studio/seeed-linux-dtoverlays/blob/master/overlays/rpi/respeaker-2mic-v2_0-overlay.dts
+*
+* Confirmed live, this session, that this specific overlay is required
+* -- not the mainline community "wm8960-soundcard" overlay, and not a
+* hand-authored one guessing at the codec's clock role. Root cause of
+* everything that came before this working: the v2.0 board's actual
+* codec is a TI TLV320AIC3104 (chip package print "AC3104I"), not the
+* WM8960 the board's still-current product name implies -- Seeed swapped
+* the codec to support Pi 5 and a wider sample-rate range, keeping the
+* same product name. Getting the right codec driver still wasn't enough
+* on its own: this overlay's biggest difference from a naively-authored
+* one is that the CODEC is configured as I2S bit/frame-clock master
+* (simple-audio-card,bitclock-master / frame-master both point at the
+* codec node, target = &i2s_clk_consumer on the Pi side) -- the Pi is
+* the clock slave here, backwards from the usual assumption. Getting
+* that backwards produced a clean-looking but totally silent capture
+* (correct I2C comms, correct DAPM power state, correct register
+* values, zero actual samples) that took a full session to diagnose
+* through mixer/DAPM/clock-framework debugging before landing on "wrong
+* board schematic assumption" as the actual answer.
+*/
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "brcm,bcm2835", "brcm,bcm2708", "brcm,bcm2709", "brcm,bcm2711";
+
+	fragment@0 {
+		target-path="/";
+		__overlay__ {
+			hardware = "reSpeaker V2.0";
+		};
+	};
+
+	fragment@1 {
+		target-path="/";
+		__overlay__ {
+
+			tlv320aic3104_mclk: tlv320aic3104_mclk {
+				#clock-cells = <0>;
+				compatible = "fixed-clock";
+				clock-frequency = <24576000>;
+			};
+		};
+	};
+
+	fragment@2 {
+		target = <&i2c1>;
+		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "okay";
+
+			tlv320aic3104: tlv320aic3104@18 {
+				#sound-dai-cells = <0>;
+				compatible = "ti,tlv320aic3104";
+				reg = <0x18>;
+				ai3x-micbias-vg = <2>;// set MICBIAS to 2.5v
+			};
+		};
+	};
+
+	fragment@3 {
+		target = <&i2s_clk_consumer>;
+		__overlay__ {
+			status = "okay";
+		};
+	};
+
+	fragment@4 {
+		target = <&sound>;
+		slave_overlay: __overlay__ {
+			compatible = "simple-audio-card";
+			simple-audio-card,format = "i2s";
+			simple-audio-card,name = "seeed2micvoicec";
+			i2s-controller = <&i2s_clk_consumer>;
+			status = "okay";
+
+			simple-audio-card,widgets =
+			"Headphone", "Headphone Jack",
+			"Line", "Line In";
+			simple-audio-card,routing =
+			"Headphone Jack",       "HPLOUT",
+			"Headphone Jack",       "HPROUT",
+			"LINE1L",               "Line In",
+			"LINE1R",               "Line In";
+
+			simple-audio-card,bitclock-master = <&sound_master>;
+			simple-audio-card,frame-master = <&sound_master>;
+
+			simple-audio-card,cpu {
+				sound-dai = <&i2s_clk_consumer>;
+			};
+			sound_master: simple-audio-card,codec {
+				#sound-dai-cells = <0>;
+				sound-dai = <&tlv320aic3104>;
+				clocks = <&tlv320aic3104_mclk>;
+				clock-names = "mclk";
+			};
+		};
+	};
+
+	__overrides__ {
+	};
+};

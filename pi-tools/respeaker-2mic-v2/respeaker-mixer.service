@@ -1,0 +1,11 @@
+[Unit]
+Description=Apply ReSpeaker 2-Mics v2.0 mic mixer settings
+After=sound.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/meni/wm8960-setup/respeaker_mixer_init.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
