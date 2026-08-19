@@ -491,9 +491,14 @@ async def main_loop():
     trigger_event = asyncio.Event()
     start_button_listener(loop)
 
+    _debug_frame_count = {"n": 0}
+
     def audio_callback(frame: np.ndarray):
         # runs on PortAudio's own thread, not the event loop thread —
         # asyncio.Event isn't thread-safe, so hop back via call_soon_threadsafe
+        _debug_frame_count["n"] += 1
+        if _debug_frame_count["n"] % 25 == 0:
+            log.info("DEBUG: clap-listener frame energy=%.4f", _frame_energy(frame))
         if detector.process_frame(frame):
             loop.call_soon_threadsafe(trigger_event.set)
 
