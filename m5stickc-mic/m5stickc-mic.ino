@@ -32,23 +32,23 @@ const char* WIFI_PASSWORD = "0543265994";
 
 // Update this if the Pi's IP changes (it has before, twice, this session —
 // DHCP reassigned it after each reboot). Check with `hostname -I` on the Pi.
-const char* PI_IP = "192.168.68.76";
+const char* PI_IP = "192.168.68.53";
 const int PI_PORT = 5005;
 // Same endpoint the dashboard's own manual-trigger button already
 // posts to (capture-svc/web_ui.py) — Button A on the M5StickC becomes
 // a second physical trigger alongside the double-clap detector, no
 // Pi-side code changes needed at all.
-const char* PI_TRIGGER_URL = "http://192.168.68.76:8010/api/trigger";
+const char* PI_TRIGGER_URL = "http://192.168.68.53:8010/api/trigger";
 // Polled to animate the eyes while a conversation is active, so it's
 // visible at a glance whether the bot is still busy or has gone back
 // to idle (needing a fresh clap/button press to start again). Plain
 // text ("listening", "session", ...) not JSON — nothing on this board
 // to parse JSON with, and we only need to compare the whole string.
-const char* PI_STATE_URL = "http://192.168.68.76:8010/api/state";
+const char* PI_STATE_URL = "http://192.168.68.53:8010/api/state";
 // Same endpoint the dashboard's "end session" button posts to — Button A
 // ends an in-progress conversation instead of starting a new one when
 // pressed while conversationActive is true (see checkButton()).
-const char* PI_END_SESSION_URL = "http://192.168.68.76:8010/api/end-session";
+const char* PI_END_SESSION_URL = "http://192.168.68.53:8010/api/end-session";
 
 #define I2S_PORT      I2S_NUM_0
 #define SAMPLE_RATE   16000
