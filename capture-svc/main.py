@@ -217,8 +217,24 @@ def start_button_listener(loop: asyncio.AbstractEventLoop):
     try:
         from gpiozero import Button
         button = Button(int(BUTTON_GPIO_PIN), bounce_time=0.2)
-        button.when_pressed = lambda: loop.call_soon_threadsafe(button_trigger_event.set)
-        log.info("physical button listener active on GPIO%s", BUTTON_GPIO_PIN)
+
+        async def _poll():
+            # when_pressed never fired here despite the pin itself
+            # reading correctly (confirmed live: a direct gpioget while
+            # physically held read the expected level cleanly) -- a
+            # gpiozero/lgpio edge-detection gap on this Pi/kernel combo,
+            # not a wiring issue. Polling the plain is_pressed value
+            # sidesteps the broken callback path entirely.
+            was_pressed = button.is_pressed
+            while True:
+                await asyncio.sleep(0.05)
+                is_pressed = button.is_pressed
+                if is_pressed and not was_pressed:
+                    button_trigger_event.set()
+                was_pressed = is_pressed
+
+        loop.create_task(_poll())
+        log.info("physical button listener active on GPIO%s (polling)", BUTTON_GPIO_PIN)
     except Exception:
         log.exception("BUTTON_GPIO_PIN=%s set but button init failed -- physical button disabled", BUTTON_GPIO_PIN)
 
