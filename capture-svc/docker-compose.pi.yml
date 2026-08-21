@@ -17,7 +17,13 @@ services:
       # ReSpeaker 2-Mics Pi HAT v2.0's onboard user button is wired to
       # GPIO17 (confirmed via Seeed's own wiki) -- a much more reliable
       # trigger than the double-clap detector's timing sensitivity.
+      # gpiozero's lgpio pin factory (see requirements.txt) needs the
+      # character-device node, not just /dev/gpiomem -- confirmed live:
+      # button init failed until this was added ("Read-only file
+      # system: /sys/class/gpio/export", the legacy sysfs fallback path
+      # gpiozero used without a real pin factory available).
       - /dev/gpiomem:/dev/gpiomem
+      - /dev/gpiochip0:/dev/gpiochip0
     volumes:
       # BlueALSA is a userspace daemon talking over D-Bus, not a plain
       # ALSA device node — /dev/snd alone isn't enough for the

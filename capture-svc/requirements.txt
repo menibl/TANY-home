@@ -8,3 +8,8 @@ uvicorn[standard]==0.29.0
 # Optional physical trigger button (BUTTON_GPIO_PIN). Imports fine on any
 # platform; only touches real GPIO hardware when that env var is set.
 gpiozero==2.0.1
+# gpiozero's default pin factory falls back to the legacy sysfs GPIO
+# interface (/sys/class/gpio/export), which is read-only in this
+# container on this kernel -- confirmed live: OSError on button init.
+# lgpio uses the modern /dev/gpiochip character device instead.
+lgpio==0.2.2.0
