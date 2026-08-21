@@ -14,7 +14,10 @@ services:
     network_mode: host
     devices:
       - /dev/snd:/dev/snd
-      # - /dev/gpiomem:/dev/gpiomem   # uncomment for step 3 (physical button)
+      # ReSpeaker 2-Mics Pi HAT v2.0's onboard user button is wired to
+      # GPIO17 (confirmed via Seeed's own wiki) -- a much more reliable
+      # trigger than the double-clap detector's timing sensitivity.
+      - /dev/gpiomem:/dev/gpiomem
     volumes:
       # BlueALSA is a userspace daemon talking over D-Bus, not a plain
       # ALSA device node — /dev/snd alone isn't enough for the
@@ -50,5 +53,5 @@ services:
       - MIC_DEVICE_NAME_2=${MIC_DEVICE_NAME_2:-}
       - SPEAKER_DEVICE_NAME=${SPEAKER_DEVICE_NAME:-jbl_a2dp}
       - SPEAKER_SAMPLE_RATE=${SPEAKER_SAMPLE_RATE:-48000}
-      # - BUTTON_GPIO_PIN=17          # uncomment for step 3
+      - BUTTON_GPIO_PIN=17
     restart: unless-stopped
